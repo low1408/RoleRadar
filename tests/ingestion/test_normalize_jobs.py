@@ -1,4 +1,5 @@
 from roleradar.ingestion.normalize_jobs import (
+    normalize_adzuna_posting,
     normalize_greenhouse_posting,
     normalize_lever_posting,
 )
@@ -61,3 +62,29 @@ def test_normalize_greenhouse_posting_extracts_content_text() -> None:
     assert normalized.description_text == "Use Python and SQL. Build dashboards."
     assert normalized.content_hash is not None
     assert normalized.source_updated_at is not None
+
+
+def test_normalize_adzuna_posting_marks_description_as_snippet() -> None:
+    posting = {
+        "id": "adzuna-1",
+        "title": "Data Analyst",
+        "redirect_url": "https://www.adzuna.sg/jobs/details/adzuna-1",
+        "description": "Python and SQL snippet...",
+        "created": "2026-07-01T01:02:03Z",
+        "salary_min": 5000,
+        "salary_max": 7000,
+        "company": {"display_name": "Example Pte Ltd"},
+        "location": {"display_name": "Singapore"},
+        "contract_time": "full_time",
+    }
+
+    normalized = normalize_adzuna_posting(posting)
+
+    assert normalized.source == "adzuna"
+    assert normalized.source_job_id == "adzuna-1"
+    assert normalized.company_name == "Example Pte Ltd"
+    assert normalized.description_text == "Python and SQL snippet..."
+    assert normalized.text_quality == "snippet"
+    assert normalized.raw_payload["text_quality"] == "snippet"
+    assert normalized.salary_min == 5000
+    assert normalized.salary_max == 7000

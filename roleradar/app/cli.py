@@ -82,23 +82,52 @@ def seed_taxonomy(file_path: str) -> None:
 @click.option(
     "--source",
     required=True,
-    type=click.Choice(["greenhouse", "lever"]),
+    type=click.Choice(["adzuna", "greenhouse", "lever"]),
     help="Source to ingest.",
 )
 @click.option(
     "--targets",
     "targets_file",
-    required=True,
+    required=False,
     type=click.Path(exists=True, dir_okay=False, path_type=str),
-    help="CSV file containing target companies.",
+    help="CSV file containing target companies for board-based sources.",
 )
-def ingest(source: str, targets_file: str) -> None:
+@click.option("--query", help="Search query for Adzuna ingestion.")
+@click.option("--location", help="Location filter for Adzuna ingestion.")
+@click.option("--country", default="sg", show_default=True, help="Adzuna country code.")
+@click.option(
+    "--results-per-page",
+    default=20,
+    show_default=True,
+    type=click.IntRange(min=1, max=50),
+    help="Adzuna results per page.",
+)
+def ingest(
+    source: str,
+    targets_file: str | None,
+    query: str | None,
+    location: str | None,
+    country: str,
+    results_per_page: int,
+) -> None:
     """Ingest jobs from a configured source."""
     settings = Settings()
+    if source == "adzuna":
+        if not query or not location:
+            raise click.UsageError("Adzuna ingestion requires --query and --location.")
+    elif targets_file is None:
+        raise click.UsageError(f"{source} ingestion requires --targets.")
+
     result = ingest_jobs(
         database_url=settings.database_url,
         source=source,
         targets_file=targets_file,
+        query=query,
+        location=location,
+        country=country,
+        results_per_page=results_per_page,
+        adzuna_app_id=settings.adzuna_app_id,
+        adzuna_app_key=settings.adzuna_app_key,
         sqlite_wal=settings.sqlite_wal,
         sqlite_busy_timeout_ms=settings.sqlite_busy_timeout_ms,
     )

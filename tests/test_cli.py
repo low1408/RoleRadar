@@ -44,6 +44,22 @@ def test_init_db_command_creates_database(tmp_path) -> None:
     assert "ingestion_runs" in inspect(engine).get_table_names()
 
 
+def test_ingest_help_lists_adzuna_source() -> None:
+    result = CliRunner().invoke(cli, ["ingest", "--help"])
+
+    assert result.exit_code == 0
+    assert "[adzuna|greenhouse|lever]" in result.output
+    assert "--query" in result.output
+    assert "--location" in result.output
+
+
+def test_adzuna_ingest_requires_query_and_location() -> None:
+    result = CliRunner().invoke(cli, ["ingest", "--source", "adzuna"])
+
+    assert result.exit_code != 0
+    assert "Adzuna ingestion requires --query and --location" in result.output
+
+
 def test_report_skills_command_renders_snapshot(tmp_path) -> None:
     db_path = tmp_path / "skills-report.sqlite3"
     database_url = f"sqlite:///{db_path}"

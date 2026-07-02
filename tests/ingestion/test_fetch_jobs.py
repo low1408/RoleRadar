@@ -44,6 +44,35 @@ class FakeGreenhouseClient:
         ]
 
 
+class FakeAdzunaClient:
+    def search_jobs(
+        self,
+        *,
+        query: str,
+        location: str,
+        country: str = "sg",
+        results_per_page: int = 20,
+    ) -> list[dict]:
+        assert query == "data analyst"
+        assert location == "Singapore"
+        assert country == "sg"
+        assert results_per_page == 20
+        return [
+            {
+                "id": "adzuna-1",
+                "title": "Data Analyst",
+                "redirect_url": "https://www.adzuna.sg/jobs/details/adzuna-1",
+                "description": "Python and SQL snippet...",
+                "created": "2026-07-01T01:02:03Z",
+                "salary_min": 5000,
+                "salary_max": 7000,
+                "company": {"display_name": "Example Pte Ltd"},
+                "location": {"display_name": "Singapore"},
+                "contract_time": "full_time",
+            }
+        ]
+
+
 class PartiallyFailingGreenhouseClient:
     def fetch_postings(self, site: str) -> list[dict]:
         if site == "broken":
@@ -245,6 +274,43 @@ def test_target_failure_does_not_fail_whole_ingestion_run(tmp_path) -> None:
     assert result.targets_ingested == 1
     assert result.targets_failed == 1
     assert result.jobs_seen == 1
+
+
+def test_ingest_jobs_uses_adzuna_query_without_extracting_snippet_skills(
+    tmp_path,
+) -> None:
+    db_url = f"sqlite:///{tmp_path / 'adzuna.sqlite3'}"
+    seed_file = tmp_path / "skills.csv"
+    _write_seed_file(seed_file)
+    _seed_taxonomy(db_url, seed_file)
+
+    result = ingest_jobs(
+        database_url=db_url,
+        source="adzuna",
+        query="data analyst",
+        location="Singapore",
+        adzuna_client=FakeAdzunaClient(),
+    )
+
+    assert result.targets_seen == 1
+    assert result.targets_ingested == 1
+    assert result.targets_failed == 0
+    assert result.jobs_seen == 1
+    assert result.source_listings_upserted == 1
+    assert result.observations_created == 1
+    assert result.job_skills_extracted == 0
+
+    engine = create_database_engine(db_url)
+    session_factory = create_session_factory(engine)
+    with session_factory() as session:
+        listing = session.scalars(select(SourceListing)).one()
+        job_skills = session.scalars(select(JobSkill)).all()
+
+    assert listing.source == "adzuna"
+    assert listing.raw_payload["text_quality"] == "snippet"
+    assert listing.salary_min == 5000
+    assert listing.salary_max == 7000
+    assert job_skills == []
 
 
 def _write_seed_file(seed_file) -> None:

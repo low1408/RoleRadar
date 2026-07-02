@@ -28,6 +28,7 @@ class NormalizedJob:
     salary_interval: str | None
     content_hash: str | None
     raw_payload: dict[str, Any]
+    text_quality: str = "full_text"
     source_updated_at: datetime | None = None
 
 
@@ -75,6 +76,7 @@ def normalize_lever_posting(
         salary_interval=_clean(salary.get("interval")) or None,
         content_hash=_content_hash(description_text),
         raw_payload=posting,
+        text_quality="full_text",
         source_updated_at=_lever_timestamp(posting.get("createdAt")),
     )
 
@@ -110,9 +112,50 @@ def normalize_greenhouse_posting(
         salary_interval=None,
         content_hash=_content_hash(description_text),
         raw_payload=posting,
+        text_quality="full_text",
         source_updated_at=_parse_datetime(
             posting.get("updated_at") or posting.get("updatedAt")
         ),
+    )
+
+
+def normalize_adzuna_posting(posting: dict[str, Any]) -> NormalizedJob:
+    """Normalize one Adzuna job search result.
+
+    Adzuna search results expose description snippets, not full descriptions.
+    """
+    source_id = str(
+        posting.get("id") or posting.get("redirect_url") or posting.get("title")
+    )
+    company = (
+        posting.get("company") if isinstance(posting.get("company"), dict) else {}
+    )
+    location = (
+        posting.get("location") if isinstance(posting.get("location"), dict) else {}
+    )
+    description_text = _clean(posting.get("description")) or None
+
+    return NormalizedJob(
+        source="adzuna",
+        source_job_id=source_id,
+        company_name=_clean(company.get("display_name")) or "Unknown company",
+        title=_clean(posting.get("title")) or "Untitled role",
+        canonical_url=_clean(posting.get("redirect_url")) or None,
+        source_url=_clean(posting.get("redirect_url")) or None,
+        location=_clean(location.get("display_name")) or None,
+        workplace_type=_clean(
+            posting.get("contract_time") or posting.get("contract_type")
+        )
+        or None,
+        description_text=description_text,
+        salary_min=_to_float(posting.get("salary_min")),
+        salary_max=_to_float(posting.get("salary_max")),
+        salary_currency=_clean(posting.get("salary_currency")) or "SGD",
+        salary_interval=None,
+        content_hash=_content_hash(description_text),
+        raw_payload={**posting, "text_quality": "snippet"},
+        text_quality="snippet",
+        source_updated_at=_parse_datetime(posting.get("created")),
     )
 
 
