@@ -1,0 +1,26 @@
+# Setup
+.env
+.pytest_cache/
+*.egg-info/
+__pycache__/
+*.py[cod]
+.agent-quality/
+AGENTS.md
+.serena/
+plans/*
+!plans/
+!plans/MAIN_PLAN.md
+data/
+*.sqlite
+*.sqlite3
+*.db
+.env.example
+
+# SG developer certificate
+*.pem
+*.key
+*.crt
+*.cer
+*.p12
+*.pfx
+certs/

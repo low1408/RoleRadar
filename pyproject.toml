@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "roleradar"
+version = "0.1.0"
+description = "Singapore-focused job market intelligence tooling."
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [
+  { name = "RoleRadar maintainers" }
+]
+dependencies = [
+  "click>=8.1",
+  "pydantic>=2.7",
+  "pydantic-settings>=2.2",
+  "python-dotenv>=1.0",
+  "requests>=2.31",
+  "sqlalchemy>=2.0",
+  "structlog>=24.1"
+]
+
+[project.optional-dependencies]
+dev = [
+  "black>=24.0",
+  "pytest>=8.0",
+  "ruff>=0.4"
+]
+
+[project.scripts]
+roleradar = "roleradar.app.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["roleradar*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.black]
+line-length = 88
+target-version = ["py311"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+

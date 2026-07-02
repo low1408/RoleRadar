@@ -1,0 +1,9 @@
+click>=8.1
+pydantic>=2.7
+pydantic-settings>=2.2
+python-dotenv>=1.0
+requests>=2.31
+sqlalchemy>=2.0
+structlog>=24.1
+pytest>=8.0
+
