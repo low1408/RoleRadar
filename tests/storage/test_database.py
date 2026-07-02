@@ -1,0 +1,61 @@
+from sqlalchemy import inspect, text
+
+from roleradar.storage.database import (
+    create_database_engine,
+    create_session_factory,
+    init_database,
+)
+
+
+def test_init_database_creates_phase_1_tables(tmp_path) -> None:
+    db_path = tmp_path / "roleradar.sqlite3"
+    engine = create_database_engine(f"sqlite:///{db_path}")
+
+    init_database(engine=engine)
+
+    table_names = set(inspect(engine).get_table_names())
+    assert {
+        "ingestion_runs",
+        "source_listings",
+        "jobs",
+        "companies",
+        "skills",
+        "skill_aliases",
+        "job_skills",
+        "posting_observations",
+    }.issubset(table_names)
+
+
+def test_file_backed_sqlite_uses_wal_and_busy_timeout(tmp_path) -> None:
+    db_path = tmp_path / "roleradar.sqlite3"
+    engine = create_database_engine(
+        f"sqlite:///{db_path}",
+        sqlite_wal=True,
+        sqlite_busy_timeout_ms=7500,
+    )
+
+    with engine.connect() as connection:
+        journal_mode = connection.execute(text("PRAGMA journal_mode")).scalar_one()
+        busy_timeout = connection.execute(text("PRAGMA busy_timeout")).scalar_one()
+
+    assert journal_mode == "wal"
+    assert busy_timeout == 7500
+
+
+def test_session_factory_commits_records(tmp_path) -> None:
+    from roleradar.storage.models import IngestionRun
+
+    db_path = tmp_path / "roleradar.sqlite3"
+    engine = create_database_engine(f"sqlite:///{db_path}")
+    init_database(engine=engine)
+    session_factory = create_session_factory(engine)
+
+    with session_factory() as session:
+        session.add(IngestionRun(source="test-source", status="completed"))
+        session.commit()
+
+    with session_factory() as session:
+        run = session.query(IngestionRun).one()
+
+    assert run.source == "test-source"
+
