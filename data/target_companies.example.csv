@@ -1,3 +1,3 @@
 company_name,source,board_token_or_site,enabled,notes
 Example Lever Company,lever,example,true,Replace with a real Lever site token.
-
+Example Greenhouse Company,greenhouse,example,true,Replace with a real Greenhouse board token.

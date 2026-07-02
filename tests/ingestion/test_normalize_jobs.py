@@ -1,4 +1,7 @@
-from roleradar.ingestion.normalize_jobs import normalize_lever_posting
+from roleradar.ingestion.normalize_jobs import (
+    normalize_greenhouse_posting,
+    normalize_lever_posting,
+)
 
 
 def test_normalize_lever_posting_extracts_description_and_salary() -> None:
@@ -34,3 +37,27 @@ def test_normalize_lever_posting_extracts_description_and_salary() -> None:
     assert "Build dashboards" in normalized.description_text
     assert normalized.content_hash is not None
 
+
+def test_normalize_greenhouse_posting_extracts_content_text() -> None:
+    posting = {
+        "id": 123,
+        "title": "Data Analyst",
+        "absolute_url": "https://boards.greenhouse.io/example/jobs/123",
+        "location": {"name": "Singapore"},
+        "content": "<p>Use Python and SQL.</p><ul><li>Build dashboards.</li></ul>",
+        "updated_at": "2026-07-01T01:02:03Z",
+    }
+
+    normalized = normalize_greenhouse_posting(
+        posting=posting,
+        company_name="Example Pte Ltd",
+        board_token_or_site="example",
+    )
+
+    assert normalized.source == "greenhouse"
+    assert normalized.source_job_id == "example:123"
+    assert normalized.title == "Data Analyst"
+    assert normalized.location == "Singapore"
+    assert normalized.description_text == "Use Python and SQL. Build dashboards."
+    assert normalized.content_hash is not None
+    assert normalized.source_updated_at is not None

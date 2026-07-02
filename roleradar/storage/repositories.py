@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from roleradar.storage.models import (
     Company,
+    DuplicateJobCandidate,
     IngestionRun,
     Job,
     JobSkill,
@@ -180,6 +181,64 @@ class JobRepository:
         self.session.flush()
         return observation
 
+    def find_duplicate_candidates(self, job: Job) -> list[Job]:
+        """Find conservative cross-source duplicate candidates for one job."""
+        if job.id is None or job.company is None:
+            return []
+
+        filters = [
+            Job.id != job.id,
+            Job.company_id == job.company_id,
+            Job.normalized_title == job.normalized_title,
+        ]
+        if job.location:
+            filters.append(Job.location == job.location)
+
+        if job.canonical_url:
+            filters.append(Job.canonical_url != job.canonical_url)
+
+        candidates = self.session.scalars(select(Job).where(*filters)).all()
+        return [
+            candidate
+            for candidate in candidates
+            if _jobs_have_distinct_sources(job, candidate)
+            and _jobs_have_strong_signal(job, candidate)
+        ]
+
+    def record_duplicate_candidate(
+        self,
+        *,
+        job: Job,
+        candidate_job: Job,
+        match_type: str,
+        score: float,
+        reason: str,
+    ) -> DuplicateJobCandidate:
+        """Persist a reviewable duplicate candidate without merging source listings."""
+        first_job, second_job = sorted([job, candidate_job], key=lambda item: item.id)
+        existing = self.session.scalar(
+            select(DuplicateJobCandidate).where(
+                DuplicateJobCandidate.job_id == first_job.id,
+                DuplicateJobCandidate.candidate_job_id == second_job.id,
+            )
+        )
+        if existing is not None:
+            existing.match_type = match_type
+            existing.score = max(existing.score, score)
+            existing.reason = reason
+            return existing
+
+        candidate = DuplicateJobCandidate(
+            job=first_job,
+            candidate_job=second_job,
+            match_type=match_type,
+            score=score,
+            reason=reason,
+        )
+        self.session.add(candidate)
+        self.session.flush()
+        return candidate
+
 
 class SkillRepository:
     """Repository for taxonomy skills, aliases, and extracted job skills."""
@@ -279,3 +338,15 @@ class SkillRepository:
         self.session.add(job_skill)
         self.session.flush()
         return job_skill
+
+
+def _jobs_have_distinct_sources(first: Job, second: Job) -> bool:
+    first_sources = {listing.source for listing in first.source_listings}
+    second_sources = {listing.source for listing in second.source_listings}
+    return bool(first_sources and second_sources and first_sources != second_sources)
+
+
+def _jobs_have_strong_signal(first: Job, second: Job) -> bool:
+    if first.canonical_url and first.canonical_url == second.canonical_url:
+        return True
+    return bool(first.content_hash and first.content_hash == second.content_hash)

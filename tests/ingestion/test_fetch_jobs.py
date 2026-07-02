@@ -7,7 +7,12 @@ from roleradar.storage.database import (
     create_session_factory,
     init_database,
 )
-from roleradar.storage.models import JobSkill, PostingObservation, SourceListing
+from roleradar.storage.models import (
+    DuplicateJobCandidate,
+    JobSkill,
+    PostingObservation,
+    SourceListing,
+)
 
 
 class FakeLeverClient:
@@ -20,6 +25,36 @@ class FakeLeverClient:
                 "hostedUrl": "https://jobs.lever.co/example/job-1",
                 "categories": {"location": "Singapore", "commitment": "Full-time"},
                 "descriptionPlain": "Python and SQL role.",
+            }
+        ]
+
+
+class FakeGreenhouseClient:
+    def fetch_postings(self, site: str) -> list[dict]:
+        assert site in {"example", "example-gh"}
+        return [
+            {
+                "id": 123,
+                "title": "Data Analyst",
+                "absolute_url": f"https://boards.greenhouse.io/{site}/jobs/123",
+                "location": {"name": "Singapore"},
+                "content": "<p>Python and SQL role.</p>",
+                "updated_at": "2026-07-01T01:02:03Z",
+            }
+        ]
+
+
+class PartiallyFailingGreenhouseClient:
+    def fetch_postings(self, site: str) -> list[dict]:
+        if site == "broken":
+            raise RuntimeError("source unavailable")
+        return [
+            {
+                "id": 124,
+                "title": "Software Engineer",
+                "absolute_url": "https://boards.greenhouse.io/example/jobs/124",
+                "location": {"name": "Singapore"},
+                "content": "<p>Python services.</p>",
             }
         ]
 
@@ -48,16 +83,7 @@ def test_ingest_jobs_uses_lever_target_and_extracts_skills(tmp_path) -> None:
     db_url = f"sqlite:///{tmp_path / 'ingest.sqlite3'}"
     seed_file = tmp_path / "skills.csv"
     targets_file = tmp_path / "targets.csv"
-    seed_file.write_text(
-        "\n".join(
-            [
-                "skill_name,category,source_taxonomy,alias,match_type,case_sensitive",
-                "Python,Tech,local,Python,literal,false",
-                "SQL,Tech,local,SQL,literal,false",
-            ]
-        ),
-        encoding="utf-8",
-    )
+    _write_seed_file(seed_file)
     targets_file.write_text(
         "\n".join(
             [
@@ -67,13 +93,7 @@ def test_ingest_jobs_uses_lever_target_and_extracts_skills(tmp_path) -> None:
         ),
         encoding="utf-8",
     )
-
-    engine = create_database_engine(db_url)
-    init_database(engine=engine)
-    session_factory = create_session_factory(engine)
-    with session_factory() as session:
-        load_taxonomy_seed(session, seed_file)
-        session.commit()
+    _seed_taxonomy(db_url, seed_file)
 
     result = ingest_jobs(
         database_url=db_url,
@@ -84,11 +104,15 @@ def test_ingest_jobs_uses_lever_target_and_extracts_skills(tmp_path) -> None:
 
     assert result.targets_seen == 1
     assert result.targets_ingested == 1
+    assert result.targets_failed == 0
     assert result.jobs_seen == 1
     assert result.source_listings_upserted == 1
     assert result.observations_created == 1
     assert result.job_skills_extracted == 2
+    assert result.duplicate_candidates == 0
 
+    engine = create_database_engine(db_url)
+    session_factory = create_session_factory(engine)
     with session_factory() as session:
         listings = session.scalars(select(SourceListing)).all()
         observations = session.scalars(select(PostingObservation)).all()
@@ -99,3 +123,147 @@ def test_ingest_jobs_uses_lever_target_and_extracts_skills(tmp_path) -> None:
     assert len(observations) == 1
     assert len(job_skills) == 2
 
+
+def test_ingest_jobs_uses_greenhouse_target(tmp_path) -> None:
+    db_url = f"sqlite:///{tmp_path / 'greenhouse.sqlite3'}"
+    seed_file = tmp_path / "skills.csv"
+    targets_file = tmp_path / "targets.csv"
+    _write_seed_file(seed_file)
+    targets_file.write_text(
+        "\n".join(
+            [
+                "company_name,source,board_token_or_site,enabled,notes",
+                "Example Pte Ltd,greenhouse,example,true,",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    _seed_taxonomy(db_url, seed_file)
+
+    result = ingest_jobs(
+        database_url=db_url,
+        source="greenhouse",
+        targets_file=targets_file,
+        greenhouse_client=FakeGreenhouseClient(),
+    )
+
+    assert result.targets_ingested == 1
+    assert result.targets_failed == 0
+    assert result.jobs_seen == 1
+    assert result.source_listings_upserted == 1
+    assert result.job_skills_extracted == 2
+
+    engine = create_database_engine(db_url)
+    session_factory = create_session_factory(engine)
+    with session_factory() as session:
+        listing = session.scalars(select(SourceListing)).one()
+
+    assert listing.source == "greenhouse"
+    assert listing.source_job_id == "example:123"
+    assert listing.description_text == "Python and SQL role."
+
+
+def test_cross_source_duplicate_candidate_keeps_source_listings(tmp_path) -> None:
+    db_url = f"sqlite:///{tmp_path / 'duplicates.sqlite3'}"
+    seed_file = tmp_path / "skills.csv"
+    lever_targets = tmp_path / "lever-targets.csv"
+    greenhouse_targets = tmp_path / "greenhouse-targets.csv"
+    _write_seed_file(seed_file)
+    lever_targets.write_text(
+        "\n".join(
+            [
+                "company_name,source,board_token_or_site,enabled,notes",
+                "Example Pte Ltd,lever,example,true,",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    greenhouse_targets.write_text(
+        "\n".join(
+            [
+                "company_name,source,board_token_or_site,enabled,notes",
+                "Example Pte Ltd,greenhouse,example-gh,true,",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    _seed_taxonomy(db_url, seed_file)
+
+    ingest_jobs(
+        database_url=db_url,
+        source="lever",
+        targets_file=lever_targets,
+        lever_client=FakeLeverClient(),
+    )
+    result = ingest_jobs(
+        database_url=db_url,
+        source="greenhouse",
+        targets_file=greenhouse_targets,
+        greenhouse_client=FakeGreenhouseClient(),
+    )
+
+    assert result.duplicate_candidates == 1
+
+    engine = create_database_engine(db_url)
+    session_factory = create_session_factory(engine)
+    with session_factory() as session:
+        listings = session.scalars(select(SourceListing)).all()
+        candidates = session.scalars(select(DuplicateJobCandidate)).all()
+
+    assert len(listings) == 2
+    assert {listing.source for listing in listings} == {"lever", "greenhouse"}
+    assert len({listing.job_id for listing in listings}) == 2
+    assert len(candidates) == 1
+    assert candidates[0].status == "pending"
+
+
+def test_target_failure_does_not_fail_whole_ingestion_run(tmp_path) -> None:
+    db_url = f"sqlite:///{tmp_path / 'partial-failure.sqlite3'}"
+    seed_file = tmp_path / "skills.csv"
+    targets_file = tmp_path / "targets.csv"
+    _write_seed_file(seed_file)
+    targets_file.write_text(
+        "\n".join(
+            [
+                "company_name,source,board_token_or_site,enabled,notes",
+                "Broken,greenhouse,broken,true,",
+                "Example,greenhouse,example,true,",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    _seed_taxonomy(db_url, seed_file)
+
+    result = ingest_jobs(
+        database_url=db_url,
+        source="greenhouse",
+        targets_file=targets_file,
+        greenhouse_client=PartiallyFailingGreenhouseClient(),
+    )
+
+    assert result.targets_seen == 2
+    assert result.targets_ingested == 1
+    assert result.targets_failed == 1
+    assert result.jobs_seen == 1
+
+
+def _write_seed_file(seed_file) -> None:
+    seed_file.write_text(
+        "\n".join(
+            [
+                "skill_name,category,source_taxonomy,alias,match_type,case_sensitive",
+                "Python,Tech,local,Python,literal,false",
+                "SQL,Tech,local,SQL,literal,false",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
+def _seed_taxonomy(db_url: str, seed_file) -> None:
+    engine = create_database_engine(db_url)
+    init_database(engine=engine)
+    session_factory = create_session_factory(engine)
+    with session_factory() as session:
+        load_taxonomy_seed(session, seed_file)
+        session.commit()

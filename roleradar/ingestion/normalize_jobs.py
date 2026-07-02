@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from html.parser import HTMLParser
 from typing import Any
 
 
@@ -37,21 +38,34 @@ def normalize_lever_posting(
     board_token_or_site: str,
 ) -> NormalizedJob:
     """Normalize one Lever posting payload."""
-    source_id = str(posting.get("id") or posting.get("hostedUrl") or posting.get("text"))
+    source_id = str(
+        posting.get("id") or posting.get("hostedUrl") or posting.get("text")
+    )
     title = _clean(posting.get("text")) or "Untitled role"
-    categories = posting.get("categories") if isinstance(posting.get("categories"), dict) else {}
+    categories = (
+        posting.get("categories")
+        if isinstance(posting.get("categories"), dict)
+        else {}
+    )
     location = _clean(categories.get("location"))
     workplace_type = _clean(categories.get("commitment"))
     description_text = _lever_description_text(posting)
-    salary = posting.get("salaryRange") if isinstance(posting.get("salaryRange"), dict) else {}
+    salary = (
+        posting.get("salaryRange")
+        if isinstance(posting.get("salaryRange"), dict)
+        else {}
+    )
 
     return NormalizedJob(
         source="lever",
         source_job_id=f"{board_token_or_site}:{source_id}",
         company_name=company_name,
         title=title,
-        canonical_url=_clean(posting.get("hostedUrl")) or _clean(posting.get("applyUrl")),
-        source_url=_clean(posting.get("hostedUrl")) or _clean(posting.get("applyUrl")),
+        canonical_url=(
+            _clean(posting.get("hostedUrl")) or _clean(posting.get("applyUrl"))
+        ),
+        source_url=_clean(posting.get("hostedUrl"))
+        or _clean(posting.get("applyUrl")),
         location=location,
         workplace_type=workplace_type,
         description_text=description_text,
@@ -62,6 +76,43 @@ def normalize_lever_posting(
         content_hash=_content_hash(description_text),
         raw_payload=posting,
         source_updated_at=_lever_timestamp(posting.get("createdAt")),
+    )
+
+
+def normalize_greenhouse_posting(
+    *,
+    posting: dict[str, Any],
+    company_name: str,
+    board_token_or_site: str,
+) -> NormalizedJob:
+    """Normalize one Greenhouse job board posting payload."""
+    source_id = str(
+        posting.get("id") or posting.get("absolute_url") or posting.get("title")
+    )
+    title = _clean(posting.get("title")) or "Untitled role"
+    location = _greenhouse_location(posting.get("location"))
+    description_text = _html_to_text(_clean(posting.get("content")))
+    source_url = _clean(posting.get("absolute_url"))
+
+    return NormalizedJob(
+        source="greenhouse",
+        source_job_id=f"{board_token_or_site}:{source_id}",
+        company_name=company_name,
+        title=title,
+        canonical_url=source_url,
+        source_url=source_url,
+        location=location,
+        workplace_type=None,
+        description_text=description_text,
+        salary_min=None,
+        salary_max=None,
+        salary_currency=None,
+        salary_interval=None,
+        content_hash=_content_hash(description_text),
+        raw_payload=posting,
+        source_updated_at=_parse_datetime(
+            posting.get("updated_at") or posting.get("updatedAt")
+        ),
     )
 
 
@@ -102,6 +153,47 @@ def _lever_timestamp(value: object) -> datetime | None:
         return None
 
 
+def _parse_datetime(value: object) -> datetime | None:
+    if not value:
+        return None
+    text = str(value).strip()
+    if text.endswith("Z"):
+        text = f"{text[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def _greenhouse_location(value: object) -> str | None:
+    if isinstance(value, dict):
+        return _clean(value.get("name")) or None
+    return _clean(value) or None
+
+
+class _TextExtractor(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.parts: list[str] = []
+
+    def handle_data(self, data: str) -> None:
+        text = data.strip()
+        if text:
+            self.parts.append(text)
+
+
+def _html_to_text(value: str) -> str | None:
+    if not value:
+        return None
+    parser = _TextExtractor()
+    parser.feed(value)
+    text = " ".join(parser.parts)
+    return text or None
+
+
 def _to_float(value: object) -> float | None:
     if value in (None, ""):
         return None
@@ -113,4 +205,3 @@ def _to_float(value: object) -> float | None:
 
 def _clean(value: object) -> str:
     return str(value or "").strip()
-

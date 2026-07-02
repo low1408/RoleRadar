@@ -57,7 +57,10 @@ class Company(Base):
     name: Mapped[str] = mapped_column(String(255))
     normalized_name: Mapped[str] = mapped_column(String(255), unique=True, index=True)
     industry: Mapped[str | None] = mapped_column(String(255))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+    )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=utc_now,
@@ -97,6 +100,10 @@ class Job(Base):
     company: Mapped[Company | None] = relationship(back_populates="jobs")
     source_listings: Mapped[list[SourceListing]] = relationship(back_populates="job")
     job_skills: Mapped[list[JobSkill]] = relationship(back_populates="job")
+    duplicate_candidates: Mapped[list[DuplicateJobCandidate]] = relationship(
+        foreign_keys="DuplicateJobCandidate.job_id",
+        back_populates="job",
+    )
 
 
 class SourceListing(Base):
@@ -234,3 +241,26 @@ class PostingObservation(Base):
 
     source_listing: Mapped[SourceListing] = relationship(back_populates="observations")
 
+
+class DuplicateJobCandidate(Base):
+    """Reviewable candidate match between two canonical jobs."""
+
+    __tablename__ = "duplicate_job_candidates"
+    __table_args__ = (
+        UniqueConstraint("job_id", "candidate_job_id", name="uq_duplicate_job_candidate"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    job_id: Mapped[int] = mapped_column(ForeignKey("jobs.id"))
+    candidate_job_id: Mapped[int] = mapped_column(ForeignKey("jobs.id"))
+    match_type: Mapped[str] = mapped_column(String(64))
+    score: Mapped[float] = mapped_column(Float, default=1.0)
+    reason: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    job: Mapped[Job] = relationship(
+        foreign_keys=[job_id],
+        back_populates="duplicate_candidates",
+    )
+    candidate_job: Mapped[Job] = relationship(foreign_keys=[candidate_job_id])

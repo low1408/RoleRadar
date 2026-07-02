@@ -20,10 +20,11 @@ def test_init_database_creates_phase_1_tables(tmp_path) -> None:
         "jobs",
         "companies",
         "skills",
-        "skill_aliases",
-        "job_skills",
-        "posting_observations",
-    }.issubset(table_names)
+            "skill_aliases",
+            "job_skills",
+            "posting_observations",
+            "duplicate_job_candidates",
+        }.issubset(table_names)
 
 
 def test_file_backed_sqlite_uses_wal_and_busy_timeout(tmp_path) -> None:
@@ -58,4 +59,3 @@ def test_session_factory_commits_records(tmp_path) -> None:
         run = session.query(IngestionRun).one()
 
     assert run.source == "test-source"
-

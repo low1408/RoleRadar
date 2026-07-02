@@ -5,8 +5,14 @@ from __future__ import annotations
 import click
 
 from roleradar import __version__
+from roleradar.analytics.salary_trends import salary_range_summaries
+from roleradar.analytics.skill_trends import (
+    skills_by_company,
+    skills_by_role_keyword,
+    skills_by_source,
+    top_skills,
+)
 from roleradar.config.settings import Settings
-from roleradar.analytics.skill_trends import top_skills
 from roleradar.ingestion.fetch_jobs import ingest_jobs
 from roleradar.sources.seed_loader import load_taxonomy_seed
 from roleradar.storage.database import (
@@ -35,7 +41,7 @@ def show_config() -> None:
 
 @cli.command("init-db")
 def init_db() -> None:
-    """Create database tables if they do not already exist."""
+    """Create database tables that do not already exist."""
     settings = Settings()
     init_database(settings)
     click.echo(f"initialized database: {settings.database_url}")
@@ -47,7 +53,7 @@ def init_db() -> None:
     "file_path",
     required=True,
     type=click.Path(exists=True, dir_okay=False, path_type=str),
-    help="Path to a taxonomy CSV or XLSX seed file.",
+    help="Path to taxonomy CSV or XLSX seed file.",
 )
 def seed_taxonomy(file_path: str) -> None:
     """Load local skill taxonomy seed data."""
@@ -76,8 +82,8 @@ def seed_taxonomy(file_path: str) -> None:
 @click.option(
     "--source",
     required=True,
-    type=click.Choice(["lever"]),
-    help="Source to ingest. Phase 3 supports Lever.",
+    type=click.Choice(["greenhouse", "lever"]),
+    help="Source to ingest.",
 )
 @click.option(
     "--targets",
@@ -100,22 +106,79 @@ def ingest(source: str, targets_file: str) -> None:
         "ingested jobs: "
         f"source={result.source} "
         f"targets={result.targets_ingested}/{result.targets_seen} "
+        f"failed_targets={result.targets_failed} "
         f"jobs={result.jobs_seen} "
-        f"listings={result.source_listings_upserted} "
+        f"source_listings={result.source_listings_upserted} "
         f"observations={result.observations_created} "
-        f"job_skills={result.job_skills_extracted}"
+        f"job_skills={result.job_skills_extracted} "
+        f"duplicate_candidates={result.duplicate_candidates}"
     )
 
 
 @cli.group("report")
 def report() -> None:
-    """Run local analytics reports."""
+    """Render local analytics reports."""
 
 
 @report.command("skills")
+@click.option("--days", default=30, show_default=True, type=click.IntRange(min=1))
 @click.option("--limit", default=10, show_default=True, type=click.IntRange(min=1))
-def report_skills(limit: int) -> None:
-    """Show top skills in active postings."""
+def report_skills(days: int, limit: int) -> None:
+    """Show current-snapshot skill metrics for active postings."""
+    with _session_from_settings() as session:
+        top_rows = top_skills(session, days=days, limit=limit)
+        source_rows = skills_by_source(session, days=days, limit=limit)
+        company_rows = skills_by_company(session, days=days, limit=limit)
+        role_rows = skills_by_role_keyword(session, days=days)
+
+    click.echo(
+        f"Skill report: current snapshot, active postings seen in last {days} days"
+    )
+    click.echo("Trend caveat: growth is not reported until repeated windows exist.")
+    click.echo("")
+    _echo_skill_counts("Top skills", top_rows)
+    _echo_source_counts("Skills by source", source_rows)
+    _echo_company_counts("Skills by company", company_rows)
+    _echo_role_counts("Skills by role/title keyword", role_rows)
+
+
+@report.command("salaries")
+@click.option("--days", default=30, show_default=True, type=click.IntRange(min=1))
+def report_salaries(days: int) -> None:
+    """Show current-snapshot employer-provided salary summaries."""
+    with _session_from_settings() as session:
+        summaries = salary_range_summaries(session, days=days)
+
+    click.echo(
+        f"Salary report: current snapshot, active postings seen in last {days} days"
+    )
+    click.echo("Trend caveat: growth is not reported until repeated windows exist.")
+    click.echo("")
+
+    if not summaries:
+        click.echo("No employer-provided salary data found.")
+        return
+
+    click.echo("Salary ranges")
+    click.echo("currency\tinterval\tpostings\tmin\tmax\tavg_min\tavg_max\tavg_midpoint")
+    for summary in summaries:
+        click.echo(
+            "\t".join(
+                [
+                    summary.currency,
+                    summary.interval,
+                    str(summary.posting_count),
+                    _format_number(summary.min_salary),
+                    _format_number(summary.max_salary),
+                    _format_number(summary.average_min_salary),
+                    _format_number(summary.average_max_salary),
+                    _format_number(summary.average_midpoint),
+                ]
+            )
+        )
+
+
+def _session_from_settings():
     settings = Settings()
     engine = create_database_engine(
         settings.database_url,
@@ -124,16 +187,67 @@ def report_skills(limit: int) -> None:
     )
     init_database(engine=engine)
     session_factory = create_session_factory(engine)
+    return session_factory()
 
-    with session_factory() as session:
-        rows = top_skills(session, limit=limit)
 
+def _echo_skill_counts(title: str, rows: list[object]) -> None:
+    click.echo(title)
     if not rows:
         click.echo("No skill data found.")
+        click.echo("")
         return
 
+    click.echo("skill\tactive_jobs")
     for row in rows:
         click.echo(f"{row.skill_name}\t{row.job_count}")
+    click.echo("")
+
+
+def _echo_source_counts(title: str, rows: list[object]) -> None:
+    click.echo(title)
+    if not rows:
+        click.echo("No skill data found.")
+        click.echo("")
+        return
+
+    click.echo("source\tskill\tactive_postings")
+    for row in rows:
+        click.echo(f"{row.source}\t{row.skill_name}\t{row.posting_count}")
+    click.echo("")
+
+
+def _echo_company_counts(title: str, rows: list[object]) -> None:
+    click.echo(title)
+    if not rows:
+        click.echo("No skill data found.")
+        click.echo("")
+        return
+
+    click.echo("company\tskill\tactive_jobs")
+    for row in rows:
+        click.echo(f"{row.company_name}\t{row.skill_name}\t{row.job_count}")
+    click.echo("")
+
+
+def _echo_role_counts(title: str, rows: list[object]) -> None:
+    click.echo(title)
+    if not rows:
+        click.echo("No skill data found.")
+        click.echo("")
+        return
+
+    click.echo("role_keyword\tskill\tactive_jobs")
+    for row in rows:
+        click.echo(f"{row.role_keyword}\t{row.skill_name}\t{row.job_count}")
+    click.echo("")
+
+
+def _format_number(value: float | None) -> str:
+    if value is None:
+        return ""
+    if value.is_integer():
+        return str(int(value))
+    return f"{value:.2f}"
 
 
 def main() -> None:
