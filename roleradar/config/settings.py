@@ -20,9 +20,11 @@ class Settings(BaseSettings):
     log_level: str = Field(default="INFO")
     sqlite_wal: bool = Field(default=True)
     sqlite_busy_timeout_ms: int = Field(default=5000, ge=0)
+    enable_experimental_sources: bool = Field(default=False)
+    careers_gov_timeout_seconds: float = Field(default=20.0, ge=0)
+    careers_gov_throttle_seconds: float = Field(default=1.0, ge=0)
 
     adzuna_app_id: str | None = Field(default=None, repr=False)
     adzuna_app_key: str | None = Field(default=None, repr=False)
     ssg_wsg_client_id: str | None = Field(default=None, repr=False)
     ssg_wsg_client_secret: str | None = Field(default=None, repr=False)
-

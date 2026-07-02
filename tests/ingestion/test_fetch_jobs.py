@@ -73,6 +73,42 @@ class FakeAdzunaClient:
         ]
 
 
+class FakeCareersGovClient:
+    def search_jobs(
+        self,
+        *,
+        query: str | None = None,
+        limit: int = 20,
+        max_pages: int = 1,
+    ) -> list[dict]:
+        assert query == "data analyst"
+        assert limit == 20
+        assert max_pages == 2
+        return [
+            {
+                "uuid": "mcf-1",
+                "metadata": {
+                    "jobPostId": "post-1",
+                    "updatedAt": "2026-07-01T01:02:03Z",
+                },
+                "title": "Data Analyst",
+                "description": "<p>Python and SQL role.</p>",
+                "postedCompany": {"name": "Example Pte Ltd"},
+                "salary": {
+                    "minimum": 5000,
+                    "maximum": 7000,
+                    "type": {"salaryType": "Monthly"},
+                },
+                "employmentTypes": [{"employmentType": "Full Time"}],
+                "_links": {
+                    "self": {
+                        "href": "https://api1.mycareersfuture.sg/v2/jobs/mcf-1",
+                    }
+                },
+            }
+        ]
+
+
 class PartiallyFailingGreenhouseClient:
     def fetch_postings(self, site: str) -> list[dict]:
         if site == "broken":
@@ -311,6 +347,60 @@ def test_ingest_jobs_uses_adzuna_query_without_extracting_snippet_skills(
     assert listing.salary_min == 5000
     assert listing.salary_max == 7000
     assert job_skills == []
+
+
+def test_ingest_jobs_uses_careers_gov_when_experimental_enabled(tmp_path) -> None:
+    db_url = f"sqlite:///{tmp_path / 'careers-gov.sqlite3'}"
+    seed_file = tmp_path / "skills.csv"
+    _write_seed_file(seed_file)
+    _seed_taxonomy(db_url, seed_file)
+
+    result = ingest_jobs(
+        database_url=db_url,
+        source="careers_gov",
+        query="data analyst",
+        max_pages=2,
+        enable_experimental_sources=True,
+        careers_gov_throttle_seconds=0,
+        careers_gov_client=FakeCareersGovClient(),
+    )
+
+    assert result.targets_seen == 1
+    assert result.targets_ingested == 1
+    assert result.targets_failed == 0
+    assert result.jobs_seen == 1
+    assert result.source_listings_upserted == 1
+    assert result.observations_created == 1
+    assert result.job_skills_extracted == 2
+
+    engine = create_database_engine(db_url)
+    session_factory = create_session_factory(engine)
+    with session_factory() as session:
+        listing = session.scalars(select(SourceListing)).one()
+        job_skills = session.scalars(select(JobSkill)).all()
+
+    assert listing.source == "careers_gov"
+    assert listing.source_job_id == "mcf-1"
+    assert listing.raw_payload["source_api"] == "mycareersfuture"
+    assert listing.salary_min == 5000
+    assert listing.salary_max == 7000
+    assert len(job_skills) == 2
+
+
+def test_ingest_jobs_rejects_careers_gov_when_experimental_disabled(tmp_path) -> None:
+    db_url = f"sqlite:///{tmp_path / 'careers-gov-disabled.sqlite3'}"
+
+    try:
+        ingest_jobs(
+            database_url=db_url,
+            source="careers_gov",
+            query="data analyst",
+            careers_gov_client=FakeCareersGovClient(),
+        )
+    except ValueError as exc:
+        assert "Experimental source careers_gov is disabled" in str(exc)
+    else:
+        raise AssertionError("careers_gov ingestion should require explicit opt-in")
 
 
 def _write_seed_file(seed_file) -> None:

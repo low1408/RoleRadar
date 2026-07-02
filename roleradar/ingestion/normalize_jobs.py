@@ -159,6 +159,74 @@ def normalize_adzuna_posting(posting: dict[str, Any]) -> NormalizedJob:
     )
 
 
+def normalize_careers_gov_posting(posting: dict[str, Any]) -> NormalizedJob:
+    """Normalize one MyCareersFuture API job result."""
+    metadata = _dict_or_empty(posting.get("metadata"))
+    company = _dict_or_empty(posting.get("postedCompany"))
+    salary = _dict_or_empty(posting.get("salary"))
+    salary_type = _dict_or_empty(salary.get("type"))
+
+    source_id = str(
+        posting.get("uuid") or metadata.get("jobPostId") or posting.get("title")
+    )
+    description_text = _html_to_text(_clean(posting.get("description")) or "")
+    source_url = _careers_gov_link(posting)
+    employment_types = _join_nested_values(
+        posting.get("employmentTypes"), "employmentType"
+    )
+
+    return NormalizedJob(
+        source="careers_gov",
+        source_job_id=source_id,
+        company_name=_clean(company.get("name")) or "Unknown company",
+        title=_clean(posting.get("title")) or "Untitled role",
+        canonical_url=source_url,
+        source_url=source_url,
+        location=(
+            _clean(posting.get("placeOfWork"))
+            or _clean(posting.get("address"))
+            or _clean(posting.get("location"))
+            or "Singapore"
+        ),
+        workplace_type=employment_types or None,
+        description_text=description_text,
+        salary_min=_to_float(salary.get("minimum")),
+        salary_max=_to_float(salary.get("maximum")),
+        salary_currency=_clean(salary.get("currency")) or "SGD",
+        salary_interval=_clean(salary_type.get("salaryType")) or None,
+        content_hash=_content_hash(description_text),
+        raw_payload={**posting, "source_api": "mycareersfuture"},
+        text_quality="full_text",
+        source_updated_at=_parse_datetime(metadata.get("updatedAt")),
+    )
+
+
+def _dict_or_empty(value: object) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    return {}
+
+
+def _careers_gov_link(posting: dict[str, Any]) -> str | None:
+    links = _dict_or_empty(posting.get("_links"))
+    self_link = _dict_or_empty(links.get("self"))
+    return _clean(self_link.get("href")) or None
+
+
+def _join_nested_values(value: object, key: str) -> str | None:
+    if not isinstance(value, list):
+        return None
+
+    labels = [
+        label
+        for item in value
+        if isinstance(item, dict)
+        for label in [_clean(item.get(key))]
+        if label
+    ]
+    return "; ".join(labels) or None
+
+
 def _lever_description_text(posting: dict[str, Any]) -> str | None:
     parts: list[str] = []
     for key in ("descriptionPlain", "additionalPlain"):

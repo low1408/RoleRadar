@@ -1,5 +1,6 @@
 from roleradar.ingestion.normalize_jobs import (
     normalize_adzuna_posting,
+    normalize_careers_gov_posting,
     normalize_greenhouse_posting,
     normalize_lever_posting,
 )
@@ -88,3 +89,41 @@ def test_normalize_adzuna_posting_marks_description_as_snippet() -> None:
     assert normalized.raw_payload["text_quality"] == "snippet"
     assert normalized.salary_min == 5000
     assert normalized.salary_max == 7000
+
+
+def test_normalize_careers_gov_posting_extracts_api_fields() -> None:
+    posting = {
+        "uuid": "mcf-1",
+        "metadata": {
+            "jobPostId": "post-1",
+            "updatedAt": "2026-07-01T01:02:03Z",
+        },
+        "title": "Data Analyst",
+        "description": "<p>Use Python and SQL.</p>",
+        "postedCompany": {"name": "Example Pte Ltd"},
+        "salary": {
+            "minimum": 5000,
+            "maximum": 7000,
+            "type": {"salaryType": "Monthly"},
+        },
+        "employmentTypes": [{"employmentType": "Full Time"}],
+        "_links": {
+            "self": {
+                "href": "https://api1.mycareersfuture.sg/v2/jobs/mcf-1",
+            }
+        },
+    }
+
+    normalized = normalize_careers_gov_posting(posting)
+
+    assert normalized.source == "careers_gov"
+    assert normalized.source_job_id == "mcf-1"
+    assert normalized.company_name == "Example Pte Ltd"
+    assert normalized.description_text == "Use Python and SQL."
+    assert normalized.salary_min == 5000
+    assert normalized.salary_max == 7000
+    assert normalized.salary_currency == "SGD"
+    assert normalized.salary_interval == "Monthly"
+    assert normalized.workplace_type == "Full Time"
+    assert normalized.source_updated_at is not None
+    assert normalized.raw_payload["source_api"] == "mycareersfuture"

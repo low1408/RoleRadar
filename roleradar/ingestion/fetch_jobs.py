@@ -11,11 +11,13 @@ from roleradar.analytics.skill_matcher import extract_and_persist_job_skills
 from roleradar.ingestion.normalize_jobs import (
     NormalizedJob,
     normalize_adzuna_posting,
+    normalize_careers_gov_posting,
     normalize_greenhouse_posting,
     normalize_lever_posting,
 )
 from roleradar.sources.adzuna import AdzunaClient
 from roleradar.sources.base import JobSourceClient
+from roleradar.sources.careers_gov import CareersGovClient
 from roleradar.sources.greenhouse import GreenhouseClient
 from roleradar.sources.lever import LeverClient
 from roleradar.storage.database import (
@@ -26,7 +28,7 @@ from roleradar.storage.database import (
 from roleradar.storage.models import IngestionRun
 from roleradar.storage.repositories import IngestionRunRepository, JobRepository
 
-SUPPORTED_SOURCES = ("adzuna", "greenhouse", "lever")
+SUPPORTED_SOURCES = ("adzuna", "careers_gov", "greenhouse", "lever")
 
 
 @dataclass(frozen=True)
@@ -105,22 +107,32 @@ def ingest_jobs(
     location: str | None = None,
     country: str = "sg",
     results_per_page: int = 20,
+    max_pages: int = 1,
     sqlite_wal: bool = True,
     sqlite_busy_timeout_ms: int = 5000,
+    enable_experimental_sources: bool = False,
+    careers_gov_timeout_seconds: float = 20.0,
+    careers_gov_throttle_seconds: float = 1.0,
     adzuna_app_id: str | None = None,
     adzuna_app_key: str | None = None,
     adzuna_client: AdzunaClient | None = None,
+    careers_gov_client: CareersGovClient | None = None,
     lever_client: LeverClient | None = None,
     greenhouse_client: GreenhouseClient | None = None,
 ) -> IngestionResult:
     """Ingest jobs from a supported source."""
     if source not in SUPPORTED_SOURCES:
         raise ValueError(f"Unsupported ingestion source: {source}")
+    if source == "careers_gov" and not enable_experimental_sources:
+        raise ValueError(
+            "Experimental source careers_gov is disabled. "
+            "Set ROLERADAR_ENABLE_EXPERIMENTAL_SOURCES=true to enable it."
+        )
 
     targets = _targets_for_source(source=source, targets_file=targets_file)
     handler = (
         None
-        if source == "adzuna"
+        if source in {"adzuna", "careers_gov"}
         else _source_handler(
             source=source,
             lever_client=lever_client,
@@ -148,6 +160,8 @@ def ingest_jobs(
                 "location": location,
                 "country": country,
                 "results_per_page": results_per_page,
+                "max_pages": max_pages,
+                "enable_experimental_sources": enable_experimental_sources,
             },
         )
 
@@ -164,6 +178,19 @@ def ingest_jobs(
                 adzuna_app_id=adzuna_app_id,
                 adzuna_app_key=adzuna_app_key,
                 adzuna_client=adzuna_client,
+            )
+        elif source == "careers_gov":
+            counters.targets_seen = 1
+            _ingest_careers_gov(
+                counters=counters,
+                run=run,
+                job_repo=job_repo,
+                query=query,
+                results_per_page=results_per_page,
+                max_pages=max_pages,
+                timeout_seconds=careers_gov_timeout_seconds,
+                throttle_seconds=careers_gov_throttle_seconds,
+                careers_gov_client=careers_gov_client,
             )
         else:
             counters.targets_seen = len(targets)
@@ -242,6 +269,42 @@ def _ingest_adzuna(
     except Exception as exc:  # noqa: BLE001 - source failures are isolated.
         counters.targets_failed = 1
         run.error_message = f"adzuna search failed: {exc}"
+        return
+
+    counters.targets_ingested = 1
+    counters.add_persisted(
+        _persist_normalized_jobs(
+            normalized_jobs=normalized_jobs,
+            run=run,
+            job_repo=job_repo,
+        )
+    )
+
+
+def _ingest_careers_gov(
+    *,
+    counters: _Counters,
+    run: IngestionRun,
+    job_repo: JobRepository,
+    query: str | None,
+    results_per_page: int,
+    max_pages: int,
+    timeout_seconds: float,
+    throttle_seconds: float,
+    careers_gov_client: CareersGovClient | None,
+) -> None:
+    try:
+        normalized_jobs = _fetch_careers_gov_jobs(
+            query=query,
+            results_per_page=results_per_page,
+            max_pages=max_pages,
+            timeout_seconds=timeout_seconds,
+            throttle_seconds=throttle_seconds,
+            careers_gov_client=careers_gov_client,
+        )
+    except Exception as exc:  # noqa: BLE001 - source failures are isolated.
+        counters.targets_failed = 1
+        run.error_message = f"careers_gov search failed: {exc}"
         return
 
     counters.targets_ingested = 1
@@ -381,12 +444,33 @@ def _fetch_adzuna_jobs(
     return [normalize_adzuna_posting(posting) for posting in postings]
 
 
+def _fetch_careers_gov_jobs(
+    *,
+    query: str | None,
+    results_per_page: int,
+    max_pages: int,
+    timeout_seconds: float,
+    throttle_seconds: float,
+    careers_gov_client: CareersGovClient | None,
+) -> list[NormalizedJob]:
+    client = careers_gov_client or CareersGovClient(
+        timeout_seconds=timeout_seconds,
+        throttle_seconds=throttle_seconds,
+    )
+    postings = client.search_jobs(
+        query=query,
+        limit=results_per_page,
+        max_pages=max_pages,
+    )
+    return [normalize_careers_gov_posting(posting) for posting in postings]
+
+
 def _targets_for_source(
     *,
     source: str,
     targets_file: str | Path | None,
 ) -> list[TargetCompany]:
-    if source == "adzuna":
+    if source in {"adzuna", "careers_gov"}:
         return []
     if targets_file is None:
         raise ValueError(f"{source} ingestion requires targets_file")

@@ -48,9 +48,10 @@ def test_ingest_help_lists_adzuna_source() -> None:
     result = CliRunner().invoke(cli, ["ingest", "--help"])
 
     assert result.exit_code == 0
-    assert "[adzuna|greenhouse|lever]" in result.output
+    assert "[adzuna|careers_gov|greenhouse|lever]" in result.output
     assert "--query" in result.output
     assert "--location" in result.output
+    assert "--max-pages" in result.output
 
 
 def test_adzuna_ingest_requires_query_and_location() -> None:
@@ -58,6 +59,13 @@ def test_adzuna_ingest_requires_query_and_location() -> None:
 
     assert result.exit_code != 0
     assert "Adzuna ingestion requires --query and --location" in result.output
+
+
+def test_careers_gov_ingest_requires_experimental_flag() -> None:
+    result = CliRunner().invoke(cli, ["ingest", "--source", "careers_gov"])
+
+    assert result.exit_code != 0
+    assert "ROLERADAR_ENABLE_EXPERIMENTAL_SOURCES=true" in result.output
 
 
 def test_report_skills_command_renders_snapshot(tmp_path) -> None:

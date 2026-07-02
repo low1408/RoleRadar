@@ -37,6 +37,9 @@ def show_config() -> None:
     click.echo(f"log_level: {settings.log_level}")
     click.echo(f"sqlite_wal: {settings.sqlite_wal}")
     click.echo(f"sqlite_busy_timeout_ms: {settings.sqlite_busy_timeout_ms}")
+    click.echo(f"enable_experimental_sources: {settings.enable_experimental_sources}")
+    click.echo(f"careers_gov_timeout_seconds: {settings.careers_gov_timeout_seconds}")
+    click.echo(f"careers_gov_throttle_seconds: {settings.careers_gov_throttle_seconds}")
 
 
 @cli.command("init-db")
@@ -82,7 +85,7 @@ def seed_taxonomy(file_path: str) -> None:
 @click.option(
     "--source",
     required=True,
-    type=click.Choice(["adzuna", "greenhouse", "lever"]),
+    type=click.Choice(["adzuna", "careers_gov", "greenhouse", "lever"]),
     help="Source to ingest.",
 )
 @click.option(
@@ -92,15 +95,22 @@ def seed_taxonomy(file_path: str) -> None:
     type=click.Path(exists=True, dir_okay=False, path_type=str),
     help="CSV file containing target companies for board-based sources.",
 )
-@click.option("--query", help="Search query for Adzuna ingestion.")
+@click.option("--query", help="Search query for API-based ingestion.")
 @click.option("--location", help="Location filter for Adzuna ingestion.")
 @click.option("--country", default="sg", show_default=True, help="Adzuna country code.")
 @click.option(
     "--results-per-page",
     default=20,
     show_default=True,
-    type=click.IntRange(min=1, max=50),
-    help="Adzuna results per page.",
+    type=click.IntRange(min=1, max=100),
+    help="API results per page.",
+)
+@click.option(
+    "--max-pages",
+    default=1,
+    show_default=True,
+    type=click.IntRange(min=1),
+    help="Maximum API pages to fetch.",
 )
 def ingest(
     source: str,
@@ -109,12 +119,19 @@ def ingest(
     location: str | None,
     country: str,
     results_per_page: int,
+    max_pages: int,
 ) -> None:
     """Ingest jobs from a configured source."""
     settings = Settings()
     if source == "adzuna":
         if not query or not location:
             raise click.UsageError("Adzuna ingestion requires --query and --location.")
+    elif source == "careers_gov":
+        if not settings.enable_experimental_sources:
+            raise click.UsageError(
+                "Experimental sources are disabled. Set "
+                "ROLERADAR_ENABLE_EXPERIMENTAL_SOURCES=true to use careers_gov."
+            )
     elif targets_file is None:
         raise click.UsageError(f"{source} ingestion requires --targets.")
 
@@ -126,8 +143,12 @@ def ingest(
         location=location,
         country=country,
         results_per_page=results_per_page,
+        max_pages=max_pages,
         adzuna_app_id=settings.adzuna_app_id,
         adzuna_app_key=settings.adzuna_app_key,
+        enable_experimental_sources=settings.enable_experimental_sources,
+        careers_gov_timeout_seconds=settings.careers_gov_timeout_seconds,
+        careers_gov_throttle_seconds=settings.careers_gov_throttle_seconds,
         sqlite_wal=settings.sqlite_wal,
         sqlite_busy_timeout_ms=settings.sqlite_busy_timeout_ms,
     )

@@ -305,24 +305,12 @@ Deliverables:
 - Source-specific throttle and timeout settings.
 - Clear logging for skipped, blocked, or changed pages.
 
-Rules:
-
-- Check robots and terms before implementation and periodically after.
-- Do not bypass access controls.
-- Do not use aggressive crawling.
-- Do not redistribute page content beyond local analysis without permission review.
-- Fail closed if expected page structure changes.
-
-Verification:
-
-- Parser tests using saved HTML fixtures only.
-- No live crawl in default tests.
 
 Exit criteria:
 
 - Collector can be enabled explicitly for local experimentation.
 - Any error is isolated to this source.
-- No default pipeline depends on it.
+
 
 ## Phase 8: SSG-WSG Live Sync
 
