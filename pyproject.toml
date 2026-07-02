@@ -13,6 +13,7 @@ authors = [
 ]
 dependencies = [
   "click>=8.1",
+  "openpyxl>=3.1",
   "pydantic>=2.7",
   "pydantic-settings>=2.2",
   "python-dotenv>=1.0",
@@ -48,4 +49,3 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
-

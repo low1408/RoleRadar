@@ -11,6 +11,8 @@ plans/*
 !plans/
 !plans/MAIN_PLAN.md
 data/
+!data/
+!data/target_companies.example.csv
 *.sqlite
 *.sqlite3
 *.db

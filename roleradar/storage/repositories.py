@@ -13,7 +13,10 @@ from roleradar.storage.models import (
     Company,
     IngestionRun,
     Job,
+    JobSkill,
     PostingObservation,
+    Skill,
+    SkillAlias,
     SourceListing,
 )
 
@@ -111,6 +114,10 @@ class JobRepository:
         location: str | None = None,
         workplace_type: str | None = None,
         description_text: str | None = None,
+        salary_min: float | None = None,
+        salary_max: float | None = None,
+        salary_currency: str | None = None,
+        salary_interval: str | None = None,
         content_hash: str | None = None,
         raw_payload: dict[str, Any] | None = None,
         source_updated_at: datetime | None = None,
@@ -140,6 +147,10 @@ class JobRepository:
         listing.location = location
         listing.workplace_type = workplace_type
         listing.description_text = description_text
+        listing.salary_min = salary_min
+        listing.salary_max = salary_max
+        listing.salary_currency = salary_currency
+        listing.salary_interval = salary_interval
         listing.content_hash = content_hash
         listing.raw_payload = raw_payload
         listing.source_updated_at = source_updated_at
@@ -169,3 +180,102 @@ class JobRepository:
         self.session.flush()
         return observation
 
+
+class SkillRepository:
+    """Repository for taxonomy skills, aliases, and extracted job skills."""
+
+    def __init__(self, session: Session) -> None:
+        self.session = session
+
+    def get_or_create_skill(
+        self,
+        *,
+        name: str,
+        category: str | None = None,
+        source_taxonomy: str = "local",
+    ) -> Skill:
+        normalized_name = normalize_text(name)
+        skill = self.session.scalar(
+            select(Skill).where(
+                Skill.normalized_name == normalized_name,
+                Skill.source_taxonomy == source_taxonomy,
+            )
+        )
+        if skill is not None:
+            skill.name = name.strip()
+            skill.category = category or skill.category
+            return skill
+
+        skill = Skill(
+            name=name.strip(),
+            normalized_name=normalized_name,
+            category=category,
+            source_taxonomy=source_taxonomy,
+        )
+        self.session.add(skill)
+        self.session.flush()
+        return skill
+
+    def get_or_create_alias(
+        self,
+        *,
+        skill: Skill,
+        alias: str,
+        match_type: str = "literal",
+        case_sensitive: bool = False,
+    ) -> SkillAlias:
+        normalized_alias = normalize_text(alias)
+        skill_alias = self.session.scalar(
+            select(SkillAlias).where(
+                SkillAlias.skill_id == skill.id,
+                SkillAlias.normalized_alias == normalized_alias,
+            )
+        )
+        if skill_alias is not None:
+            skill_alias.alias = alias.strip()
+            skill_alias.match_type = match_type
+            skill_alias.case_sensitive = case_sensitive
+            return skill_alias
+
+        skill_alias = SkillAlias(
+            skill=skill,
+            alias=alias.strip(),
+            normalized_alias=normalized_alias,
+            match_type=match_type,
+            case_sensitive=case_sensitive,
+        )
+        self.session.add(skill_alias)
+        self.session.flush()
+        return skill_alias
+
+    def add_job_skill(
+        self,
+        *,
+        job: Job,
+        skill: Skill,
+        extraction_method: str,
+        confidence: float,
+        matched_text: str | None,
+    ) -> JobSkill:
+        job_skill = self.session.scalar(
+            select(JobSkill).where(
+                JobSkill.job_id == job.id,
+                JobSkill.skill_id == skill.id,
+                JobSkill.extraction_method == extraction_method,
+            )
+        )
+        if job_skill is not None:
+            job_skill.confidence = max(job_skill.confidence, confidence)
+            job_skill.matched_text = matched_text or job_skill.matched_text
+            return job_skill
+
+        job_skill = JobSkill(
+            job=job,
+            skill=skill,
+            extraction_method=extraction_method,
+            confidence=confidence,
+            matched_text=matched_text,
+        )
+        self.session.add(job_skill)
+        self.session.flush()
+        return job_skill
