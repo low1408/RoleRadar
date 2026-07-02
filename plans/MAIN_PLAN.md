@@ -338,33 +338,9 @@ Exit criteria:
 - Live sync can update taxonomy without breaking local aliases.
 - Missing credentials produce a clear skip message.
 
-## Phase 9: JobStreet Permission Gate
+## Phase 9: JobStreet 
 
-Goal: explicitly document what must happen before JobStreet data can be integrated.
-
-Status:
-
-- Blocked pending written permission or documented API access.
-
-Do not implement:
-
-- HTML scraping.
-- Browser automation to collect postings.
-- Calls to private GraphQL or internal API endpoints.
-- Session-header spoofing.
-- Anti-bot or Cloudflare workarounds.
-
-Allowed future paths:
-
-- SEEK/JobStreet partner API access with written approval.
-- Licensed data export.
-- Employer-owned postings supplied directly by companies.
-- Public metadata only where terms allow it.
-
-Exit criteria:
-
-- Written permission, API documentation, and permitted use cases are recorded in project docs.
-- Implementation scope is reviewed before coding begins.
+Make it functional and be able to obtain Jobstreet listing and process it
 
 ## Phase 10: Operational Hardening
 
@@ -399,34 +375,3 @@ Exit criteria:
 
 - A new user can run the MVP locally from documented commands.
 - Logs explain what was fetched, skipped, inserted, updated, and failed.
-
-## MVP Definition
-
-The MVP is complete when:
-
-- Local taxonomy seed loading works.
-- One full-text source, Lever or Greenhouse, ingests successfully.
-- Job postings retain source provenance and lifecycle observations.
-- Skill extraction is deterministic and tested.
-- The CLI can produce a top-skills current snapshot report.
-- Tests pass using `~/venvs/roleradar/python`.
-
-Non-MVP:
-
-- JobStreet integration.
-- Live SSG-WSG API sync.
-- LLM summaries.
-- Mature growth/trend claims.
-- Browser automation.
-- Web UI.
-
-## Immediate Next Checklist
-
-- Create Python package scaffold.
-- Define SQLAlchemy models for ingestion runs, source listings, jobs, companies, skills, aliases, and observations.
-- Add `init-db` CLI command.
-- Add local taxonomy seed loader.
-- Pick first source: Lever or Greenhouse.
-- Add target-company seed file format.
-- Implement first source ingestion with fixtures.
-- Add current snapshot skills report.

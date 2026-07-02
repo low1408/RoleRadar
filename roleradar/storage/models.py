@@ -94,7 +94,10 @@ class Job(Base):
         default=utc_now,
         index=True,
     )
-    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    closed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        index=True,
+    )
     raw_payload: Mapped[dict | None] = mapped_column(JSON)
 
     company: Mapped[Company | None] = relationship(back_populates="jobs")
@@ -117,7 +120,9 @@ class SourceListing(Base):
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    ingestion_run_id: Mapped[int | None] = mapped_column(ForeignKey("ingestion_runs.id"))
+    ingestion_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ingestion_runs.id")
+    )
     job_id: Mapped[int | None] = mapped_column(ForeignKey("jobs.id"))
     source: Mapped[str] = mapped_column(String(64), index=True)
     source_job_id: Mapped[str] = mapped_column(String(255))
@@ -160,7 +165,11 @@ class Skill(Base):
 
     __tablename__ = "skills"
     __table_args__ = (
-        UniqueConstraint("normalized_name", "source_taxonomy", name="uq_skill_taxonomy"),
+        UniqueConstraint(
+            "normalized_name",
+            "source_taxonomy",
+            name="uq_skill_taxonomy",
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -168,7 +177,18 @@ class Skill(Base):
     normalized_name: Mapped[str] = mapped_column(String(255), index=True)
     category: Mapped[str | None] = mapped_column(String(255))
     source_taxonomy: Mapped[str] = mapped_column(String(255), default="local")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    taxonomy_version: Mapped[str | None] = mapped_column(String(255))
+    source_updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+    )
+    updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+    )
 
     aliases: Mapped[list[SkillAlias]] = relationship(back_populates="skill")
     job_skills: Mapped[list[JobSkill]] = relationship(back_populates="skill")
@@ -212,7 +232,10 @@ class JobSkill(Base):
     extraction_method: Mapped[str] = mapped_column(String(64))
     confidence: Mapped[float] = mapped_column(Float, default=1.0)
     matched_text: Mapped[str | None] = mapped_column(String(255))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+    )
 
     job: Mapped[Job] = relationship(back_populates="job_skills")
     skill: Mapped[Skill] = relationship(back_populates="job_skills")
@@ -223,12 +246,18 @@ class PostingObservation(Base):
 
     __tablename__ = "posting_observations"
     __table_args__ = (
-        Index("ix_posting_observations_listing_time", "source_listing_id", "observed_at"),
+        Index(
+            "ix_posting_observations_listing_time",
+            "source_listing_id",
+            "observed_at",
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     source_listing_id: Mapped[int] = mapped_column(ForeignKey("source_listings.id"))
-    ingestion_run_id: Mapped[int | None] = mapped_column(ForeignKey("ingestion_runs.id"))
+    ingestion_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ingestion_runs.id")
+    )
     observed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=utc_now,
@@ -247,7 +276,11 @@ class DuplicateJobCandidate(Base):
 
     __tablename__ = "duplicate_job_candidates"
     __table_args__ = (
-        UniqueConstraint("job_id", "candidate_job_id", name="uq_duplicate_job_candidate"),
+        UniqueConstraint(
+            "job_id",
+            "candidate_job_id",
+            name="uq_duplicate_job_candidate",
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -257,7 +290,10 @@ class DuplicateJobCandidate(Base):
     score: Mapped[float] = mapped_column(Float, default=1.0)
     reason: Mapped[str] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+    )
 
     job: Mapped[Job] = relationship(
         foreign_keys=[job_id],

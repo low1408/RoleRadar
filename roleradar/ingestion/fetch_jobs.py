@@ -19,6 +19,10 @@ from roleradar.sources.adzuna import AdzunaClient
 from roleradar.sources.base import JobSourceClient
 from roleradar.sources.careers_gov import CareersGovClient
 from roleradar.sources.greenhouse import GreenhouseClient
+from roleradar.sources.jobstreet import (
+    JOBSTREET_SOURCE,
+    require_jobstreet_access_approval,
+)
 from roleradar.sources.lever import LeverClient
 from roleradar.storage.database import (
     create_database_engine,
@@ -28,7 +32,7 @@ from roleradar.storage.database import (
 from roleradar.storage.models import IngestionRun
 from roleradar.storage.repositories import IngestionRunRepository, JobRepository
 
-SUPPORTED_SOURCES = ("adzuna", "careers_gov", "greenhouse", "lever")
+SUPPORTED_SOURCES = ("adzuna", "careers_gov", "greenhouse", JOBSTREET_SOURCE, "lever")
 
 
 @dataclass(frozen=True)
@@ -123,6 +127,8 @@ def ingest_jobs(
     """Ingest jobs from a supported source."""
     if source not in SUPPORTED_SOURCES:
         raise ValueError(f"Unsupported ingestion source: {source}")
+    if source == JOBSTREET_SOURCE:
+        require_jobstreet_access_approval()
     if source == "careers_gov" and not enable_experimental_sources:
         raise ValueError(
             "Experimental source careers_gov is disabled. "

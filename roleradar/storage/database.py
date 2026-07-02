@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from sqlalchemy import Engine, event
+from sqlalchemy import Engine, event, inspect, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
@@ -44,10 +44,18 @@ def create_database_engine(
 
 def create_session_factory(engine: Engine) -> sessionmaker:
     """Create a configured SQLAlchemy session factory."""
-    return sessionmaker(bind=engine, autoflush=False, expire_on_commit=False, future=True)
+    return sessionmaker(
+        bind=engine,
+        autoflush=False,
+        expire_on_commit=False,
+        future=True,
+    )
 
 
-def init_database(settings: Settings | None = None, engine: Engine | None = None) -> None:
+def init_database(
+    settings: Settings | None = None,
+    engine: Engine | None = None,
+) -> None:
     """Create all configured database tables."""
     from roleradar.storage import models  # noqa: F401
 
@@ -60,6 +68,33 @@ def init_database(settings: Settings | None = None, engine: Engine | None = None
         )
 
     Base.metadata.create_all(engine)
+    _ensure_sqlite_skill_metadata_columns(engine)
+
+
+def _ensure_sqlite_skill_metadata_columns(engine: Engine) -> None:
+    """Add Phase 8 skill metadata columns to existing local SQLite databases."""
+    if engine.dialect.name != "sqlite":
+        return
+
+    inspector = inspect(engine)
+    if "skills" not in inspector.get_table_names():
+        return
+
+    existing_columns = {column["name"] for column in inspector.get_columns("skills")}
+    statements = []
+    if "taxonomy_version" not in existing_columns:
+        statements.append("ALTER TABLE skills ADD COLUMN taxonomy_version VARCHAR(255)")
+    if "source_updated_at" not in existing_columns:
+        statements.append("ALTER TABLE skills ADD COLUMN source_updated_at DATETIME")
+    if "updated_at" not in existing_columns:
+        statements.append("ALTER TABLE skills ADD COLUMN updated_at DATETIME")
+
+    if not statements:
+        return
+
+    with engine.begin() as connection:
+        for statement in statements:
+            connection.execute(text(statement))
 
 
 def _configure_sqlite(

@@ -14,7 +14,9 @@ from roleradar.analytics.skill_trends import (
 )
 from roleradar.config.settings import Settings
 from roleradar.ingestion.fetch_jobs import ingest_jobs
+from roleradar.sources.jobstreet import JOBSTREET_SOURCE, jobstreet_blocked_message
 from roleradar.sources.seed_loader import load_taxonomy_seed
+from roleradar.sources.ssg_wsg import sync_taxonomy_from_ssg_wsg
 from roleradar.storage.database import (
     create_database_engine,
     create_session_factory,
@@ -40,6 +42,12 @@ def show_config() -> None:
     click.echo(f"enable_experimental_sources: {settings.enable_experimental_sources}")
     click.echo(f"careers_gov_timeout_seconds: {settings.careers_gov_timeout_seconds}")
     click.echo(f"careers_gov_throttle_seconds: {settings.careers_gov_throttle_seconds}")
+    click.echo(f"ssg_wsg_taxonomy_url: {settings.ssg_wsg_taxonomy_url}")
+    click.echo(f"ssg_wsg_timeout_seconds: {settings.ssg_wsg_timeout_seconds}")
+    click.echo(
+        "ssg_wsg_credentials_configured: "
+        f"{bool(settings.ssg_wsg_client_id and settings.ssg_wsg_client_secret)}"
+    )
 
 
 @cli.command("init-db")
@@ -81,11 +89,66 @@ def seed_taxonomy(file_path: str) -> None:
     )
 
 
+@cli.command("sync-taxonomy")
+@click.option(
+    "--source",
+    required=True,
+    type=click.Choice(["ssg-wsg"]),
+    help="Source taxonomy sync.",
+)
+def sync_taxonomy(source: str) -> None:
+    """Sync live skill taxonomy data from an official source."""
+    settings = Settings()
+    engine = create_database_engine(
+        settings.database_url,
+        sqlite_wal=settings.sqlite_wal,
+        sqlite_busy_timeout_ms=settings.sqlite_busy_timeout_ms,
+    )
+    init_database(engine=engine)
+    session_factory = create_session_factory(engine)
+
+    with session_factory() as session:
+        if source == "ssg-wsg":
+            result = sync_taxonomy_from_ssg_wsg(
+                session,
+                client_id=settings.ssg_wsg_client_id,
+                client_secret=settings.ssg_wsg_client_secret,
+                taxonomy_url=settings.ssg_wsg_taxonomy_url,
+                timeout_seconds=settings.ssg_wsg_timeout_seconds,
+            )
+        else:
+            raise click.UsageError(f"Unsupported taxonomy sync source: {source}")
+
+        if result.status == "completed":
+            session.commit()
+        else:
+            session.rollback()
+
+    if result.status == "skipped":
+        click.echo(
+            f"skipped taxonomy sync: source={result.source} reason={result.message}"
+        )
+        return
+
+    source_updated_at = (
+        result.source_updated_at.isoformat() if result.source_updated_at else "unknown"
+    )
+    click.echo(
+        "synced taxonomy: "
+        f"source={result.source} "
+        f"status={result.status} "
+        f"skills={result.skills_seen} "
+        f"aliases={result.aliases_seen} "
+        f"version={result.taxonomy_version or 'unknown'} "
+        f"source_updated_at={source_updated_at}"
+    )
+
+
 @cli.command("ingest")
 @click.option(
     "--source",
     required=True,
-    type=click.Choice(["adzuna", "careers_gov", "greenhouse", "lever"]),
+    type=click.Choice(["adzuna", "careers_gov", "greenhouse", "jobstreet", "lever"]),
     help="Source to ingest.",
 )
 @click.option(
@@ -123,6 +186,8 @@ def ingest(
 ) -> None:
     """Ingest jobs from a configured source."""
     settings = Settings()
+    if source == JOBSTREET_SOURCE:
+        raise click.UsageError(jobstreet_blocked_message())
     if source == "adzuna":
         if not query or not location:
             raise click.UsageError("Adzuna ingestion requires --query and --location.")

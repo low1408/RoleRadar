@@ -25,6 +25,7 @@ def test_config_command_renders_defaults() -> None:
     assert result.exit_code == 0
     assert "environment: development" in result.output
     assert "sqlite_wal: True" in result.output
+    assert "ssg_wsg_credentials_configured: False" in result.output
 
 
 def test_init_db_command_creates_database(tmp_path) -> None:
@@ -48,10 +49,19 @@ def test_ingest_help_lists_adzuna_source() -> None:
     result = CliRunner().invoke(cli, ["ingest", "--help"])
 
     assert result.exit_code == 0
-    assert "[adzuna|careers_gov|greenhouse|lever]" in result.output
+    assert "[adzuna|careers_gov|greenhouse|jobstreet|lever]" in result.output
     assert "--query" in result.output
     assert "--location" in result.output
     assert "--max-pages" in result.output
+
+
+def test_jobstreet_ingest_is_blocked_pending_permission() -> None:
+    result = CliRunner().invoke(cli, ["ingest", "--source", "jobstreet"])
+
+    assert result.exit_code != 0
+    assert "JobStreet integration is blocked" in result.output
+    assert "docs/jobstreet_access_requirements.md" in result.output
+    assert "HTML scraping" in result.output
 
 
 def test_adzuna_ingest_requires_query_and_location() -> None:
@@ -66,6 +76,21 @@ def test_careers_gov_ingest_requires_experimental_flag() -> None:
 
     assert result.exit_code != 0
     assert "ROLERADAR_ENABLE_EXPERIMENTAL_SOURCES=true" in result.output
+
+
+def test_sync_taxonomy_missing_credentials_skips(tmp_path) -> None:
+    db_path = tmp_path / "taxonomy-sync.sqlite3"
+    database_url = f"sqlite:///{db_path}"
+
+    result = CliRunner().invoke(
+        cli,
+        ["sync-taxonomy", "--source", "ssg-wsg"],
+        env={"ROLERADAR_DATABASE_URL": database_url},
+    )
+
+    assert result.exit_code == 0
+    assert "skipped taxonomy sync: source=ssg-wsg" in result.output
+    assert "ROLERADAR_SSG_WSG_CLIENT_ID" in result.output
 
 
 def test_report_skills_command_renders_snapshot(tmp_path) -> None:

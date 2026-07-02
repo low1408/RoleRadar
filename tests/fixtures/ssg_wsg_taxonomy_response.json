@@ -1,0 +1,19 @@
+{
+  "version": "2026.01",
+  "lastUpdated": "2026-01-15T08:00:00Z",
+  "data": {
+    "skills": [
+      {
+        "skillName": "Python",
+        "categoryName": "Programming",
+        "aliases": ["Python", "py"],
+        "updatedAt": "2026-01-20T08:00:00Z"
+      },
+      {
+        "skill_name": "SQL",
+        "skill_category": "Data",
+        "synonyms": "SQL;Structured Query Language"
+      }
+    ]
+  }
+}

@@ -28,3 +28,7 @@ class Settings(BaseSettings):
     adzuna_app_key: str | None = Field(default=None, repr=False)
     ssg_wsg_client_id: str | None = Field(default=None, repr=False)
     ssg_wsg_client_secret: str | None = Field(default=None, repr=False)
+    ssg_wsg_taxonomy_url: str = Field(
+        default="https://api.ssg-wsg.gov.sg/skills-framework/v1/skills",
+    )
+    ssg_wsg_timeout_seconds: float = Field(default=20.0, ge=0)

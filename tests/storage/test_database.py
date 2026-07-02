@@ -27,6 +27,32 @@ def test_init_database_creates_phase_1_tables(tmp_path) -> None:
         }.issubset(table_names)
 
 
+def test_init_database_adds_phase_8_skill_metadata_columns(tmp_path) -> None:
+    db_path = tmp_path / "legacy.sqlite3"
+    engine = create_database_engine(f"sqlite:///{db_path}")
+
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                CREATE TABLE skills (
+                    id INTEGER PRIMARY KEY,
+                    name VARCHAR(255) NOT NULL,
+                    normalized_name VARCHAR(255) NOT NULL,
+                    category VARCHAR(255),
+                    source_taxonomy VARCHAR(255) NOT NULL,
+                    created_at DATETIME NOT NULL
+                )
+                """
+            )
+        )
+
+    init_database(engine=engine)
+
+    columns = {column["name"] for column in inspect(engine).get_columns("skills")}
+    assert {"taxonomy_version", "source_updated_at", "updated_at"}.issubset(columns)
+
+
 def test_file_backed_sqlite_uses_wal_and_busy_timeout(tmp_path) -> None:
     db_path = tmp_path / "roleradar.sqlite3"
     engine = create_database_engine(
