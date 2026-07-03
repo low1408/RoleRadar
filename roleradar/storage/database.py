@@ -69,6 +69,7 @@ def init_database(
 
     Base.metadata.create_all(engine)
     _ensure_sqlite_skill_metadata_columns(engine)
+    _ensure_sqlite_source_listing_quality_columns(engine)
 
 
 def _ensure_sqlite_skill_metadata_columns(engine: Engine) -> None:
@@ -88,6 +89,33 @@ def _ensure_sqlite_skill_metadata_columns(engine: Engine) -> None:
         statements.append("ALTER TABLE skills ADD COLUMN source_updated_at DATETIME")
     if "updated_at" not in existing_columns:
         statements.append("ALTER TABLE skills ADD COLUMN updated_at DATETIME")
+
+    if not statements:
+        return
+
+    with engine.begin() as connection:
+        for statement in statements:
+            connection.execute(text(statement))
+
+
+def _ensure_sqlite_source_listing_quality_columns(engine: Engine) -> None:
+    """Add source listing quality columns to existing local SQLite databases."""
+    if engine.dialect.name != "sqlite":
+        return
+
+    inspector = inspect(engine)
+    if "source_listings" not in inspector.get_table_names():
+        return
+
+    existing_columns = {
+        column["name"] for column in inspector.get_columns("source_listings")
+    }
+    statements = []
+    if "text_quality" not in existing_columns:
+        statements.append(
+            "ALTER TABLE source_listings "
+            "ADD COLUMN text_quality VARCHAR(32) DEFAULT 'full_text'"
+        )
 
     if not statements:
         return

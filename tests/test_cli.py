@@ -98,6 +98,8 @@ def test_report_skills_command_renders_snapshot(tmp_path) -> None:
     assert result.exit_code == 0
     assert "Skill report: current snapshot" in result.output
     assert "Trend caveat: growth is not reported" in result.output
+    assert "Skill extraction coverage by source" in result.output
+    assert "lever\t2\t2\t0\t2\t100%" in result.output
     assert "Top skills" in result.output
     assert "Python\t2" in result.output
     assert "Skills by source" in result.output
@@ -121,11 +123,19 @@ def test_report_salaries_command_renders_snapshot(tmp_path) -> None:
 
     assert result.exit_code == 0
     assert "Salary report: current snapshot" in result.output
+    assert "Salary coverage: 2/2 active postings (100%)" in result.output
     assert (
-        "currency\tinterval\tpostings\tmin\tmax\tavg_min\tavg_max\tavg_midpoint"
+        "currency\tinterval\tpostings\tclosed_ranges\tmin\tmax\tavg_min\tavg_max"
+        "\tavg_midpoint\tavg_annualized_midpoint" in result.output
+    )
+    assert "SGD\tmonthly\t2\t2\t6000\t9000\t6500\t8500\t7500\t90000" in result.output
+    assert "Highest annualized salary listings" in result.output
+    assert (
+        "Example\tSoftware Engineer\tlever\tSGD\tmonthly\t7000\t9000\t96000"
         in result.output
     )
-    assert "SGD\tmonthly\t2\t6000\t9000\t6500\t8500\t7500" in result.output
+    assert "Annualized salary by skill" in result.output
+    assert "Python\t2\t90000" in result.output
 
 
 def _seed_report_database(database_url: str) -> None:

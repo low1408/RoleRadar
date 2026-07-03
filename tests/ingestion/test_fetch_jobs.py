@@ -220,9 +220,10 @@ def test_ingest_jobs_uses_lever_target_and_extracts_skills(tmp_path) -> None:
         observations = session.scalars(select(PostingObservation)).all()
         job_skills = session.scalars(select(JobSkill)).all()
 
-    assert len(listings) == 1
-    assert listings[0].source_job_id == "example:job-1"
-    assert len(observations) == 1
+        assert len(listings) == 1
+        assert listings[0].source_job_id == "example:job-1"
+        assert listings[0].text_quality == "full_text"
+        assert len(observations) == 1
     assert len(job_skills) == 2
 
 

@@ -66,6 +66,35 @@ def test_normalize_greenhouse_posting_extracts_content_text() -> None:
     assert normalized.source_updated_at is not None
 
 
+def test_normalize_greenhouse_posting_extracts_pay_input_ranges() -> None:
+    posting = {
+        "id": 123,
+        "title": "Data Analyst",
+        "absolute_url": "https://boards.greenhouse.io/example/jobs/123",
+        "location": {"name": "Singapore"},
+        "content": "<p>Use Python and SQL.</p>",
+        "pay_input_ranges": [
+            {
+                "min_value": 60000,
+                "max_value": 90000,
+                "currency": "SGD",
+                "unit": "year",
+            }
+        ],
+    }
+
+    normalized = normalize_greenhouse_posting(
+        posting=posting,
+        company_name="Example Pte Ltd",
+        board_token_or_site="example",
+    )
+
+    assert normalized.salary_min == 60000
+    assert normalized.salary_max == 90000
+    assert normalized.salary_currency == "SGD"
+    assert normalized.salary_interval == "yearly"
+
+
 def test_normalize_adzuna_posting_marks_description_as_snippet() -> None:
     posting = {
         "id": "adzuna-1",
@@ -90,6 +119,7 @@ def test_normalize_adzuna_posting_marks_description_as_snippet() -> None:
     assert normalized.raw_payload["text_quality"] == "snippet"
     assert normalized.salary_min == 5000
     assert normalized.salary_max == 7000
+    assert normalized.salary_currency is None
 
 
 def test_normalize_careers_gov_posting_extracts_api_fields() -> None:

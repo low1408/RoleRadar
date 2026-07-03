@@ -94,6 +94,9 @@ def normalize_greenhouse_posting(
     location = _greenhouse_location(posting.get("location"))
     description_text = _html_to_text(_clean(posting.get("content")))
     source_url = _clean(posting.get("absolute_url"))
+    salary_min, salary_max, salary_currency, salary_interval = _greenhouse_salary(
+        posting
+    )
 
     return NormalizedJob(
         source="greenhouse",
@@ -105,10 +108,10 @@ def normalize_greenhouse_posting(
         location=location,
         workplace_type=None,
         description_text=description_text,
-        salary_min=None,
-        salary_max=None,
-        salary_currency=None,
-        salary_interval=None,
+        salary_min=salary_min,
+        salary_max=salary_max,
+        salary_currency=salary_currency,
+        salary_interval=salary_interval,
         content_hash=_content_hash(description_text),
         raw_payload=posting,
         text_quality="full_text",
@@ -147,7 +150,7 @@ def normalize_adzuna_posting(posting: dict[str, Any]) -> NormalizedJob:
         description_text=description_text,
         salary_min=_to_float(posting.get("salary_min")),
         salary_max=_to_float(posting.get("salary_max")),
-        salary_currency=_clean(posting.get("salary_currency")) or "SGD",
+        salary_currency=_clean(posting.get("salary_currency")) or None,
         salary_interval=None,
         content_hash=_content_hash(description_text),
         raw_payload={**posting, "text_quality": "snippet"},
@@ -344,6 +347,72 @@ def _jobstreet_work_type(posting: dict[str, Any]) -> str | None:
     )
 
 
+def _greenhouse_salary(
+    posting: dict[str, Any],
+) -> tuple[float | None, float | None, str | None, str | None]:
+    ranges = posting.get("pay_input_ranges") or posting.get("payInputRanges")
+    if isinstance(ranges, list) and ranges:
+        first_range = ranges[0]
+        if isinstance(first_range, dict):
+            salary_min = _to_float(
+                first_range.get("min_value")
+                or first_range.get("minValue")
+                or first_range.get("minimum")
+                or first_range.get("min")
+            )
+            salary_max = _to_float(
+                first_range.get("max_value")
+                or first_range.get("maxValue")
+                or first_range.get("maximum")
+                or first_range.get("max")
+            )
+            currency = (
+                _clean(first_range.get("currency"))
+                or _clean(first_range.get("currency_code"))
+                or _clean(first_range.get("currencyCode"))
+                or None
+            )
+            interval = (
+                _clean(first_range.get("unit"))
+                or _clean(first_range.get("interval"))
+                or _clean(first_range.get("period"))
+                or None
+            )
+            return (
+                salary_min,
+                salary_max,
+                currency,
+                _normalize_salary_interval(interval),
+            )
+
+    compensation = posting.get("compensation")
+    if isinstance(compensation, dict):
+        salary_min = _to_float(
+            compensation.get("min")
+            or compensation.get("minimum")
+            or compensation.get("min_value")
+        )
+        salary_max = _to_float(
+            compensation.get("max")
+            or compensation.get("maximum")
+            or compensation.get("max_value")
+        )
+        currency = (
+            _clean(compensation.get("currency"))
+            or _clean(compensation.get("currency_code"))
+            or None
+        )
+        interval = (
+            _clean(compensation.get("interval"))
+            or _clean(compensation.get("period"))
+            or _clean(compensation.get("unit"))
+            or None
+        )
+        return salary_min, salary_max, currency, _normalize_salary_interval(interval)
+
+    return None, None, None, None
+
+
 def _jobstreet_description_text(posting: dict[str, Any]) -> str | None:
     parts: list[str] = []
     for field in ("description", "jobDescription", "content"):
@@ -426,6 +495,23 @@ def _salary_interval_from_label(value: str) -> str | None:
     if "day" in normalized:
         return "daily"
     return None
+
+
+def _normalize_salary_interval(value: str | None) -> str | None:
+    if not value:
+        return None
+    normalized = value.strip().casefold()
+    if normalized in {"year", "yr", "annual", "annually", "yearly"}:
+        return "yearly"
+    if normalized in {"month", "mo", "monthly"}:
+        return "monthly"
+    if normalized in {"hour", "hr", "hourly"}:
+        return "hourly"
+    if normalized in {"day", "daily"}:
+        return "daily"
+    if normalized in {"week", "weekly"}:
+        return "weekly"
+    return _salary_interval_from_label(value) or value
 
 
 def _lever_description_text(posting: dict[str, Any]) -> str | None:

@@ -20,11 +20,15 @@ def test_init_database_creates_phase_1_tables(tmp_path) -> None:
         "jobs",
         "companies",
         "skills",
-            "skill_aliases",
-            "job_skills",
-            "posting_observations",
-            "duplicate_job_candidates",
-        }.issubset(table_names)
+        "skill_aliases",
+        "job_skills",
+        "posting_observations",
+        "duplicate_job_candidates",
+    }.issubset(table_names)
+    source_listing_columns = {
+        column["name"] for column in inspect(engine).get_columns("source_listings")
+    }
+    assert "text_quality" in source_listing_columns
 
 
 def test_init_database_adds_phase_8_skill_metadata_columns(tmp_path) -> None:
@@ -32,9 +36,7 @@ def test_init_database_adds_phase_8_skill_metadata_columns(tmp_path) -> None:
     engine = create_database_engine(f"sqlite:///{db_path}")
 
     with engine.begin() as connection:
-        connection.execute(
-            text(
-                """
+        connection.execute(text("""
                 CREATE TABLE skills (
                     id INTEGER PRIMARY KEY,
                     name VARCHAR(255) NOT NULL,
@@ -43,14 +45,50 @@ def test_init_database_adds_phase_8_skill_metadata_columns(tmp_path) -> None:
                     source_taxonomy VARCHAR(255) NOT NULL,
                     created_at DATETIME NOT NULL
                 )
+                """))
+
+    init_database(engine=engine)
+
+    columns = {column["name"] for column in inspect(engine).get_columns("skills")}
+    assert {"taxonomy_version", "source_updated_at", "updated_at"}.issubset(columns)
+
+
+def test_init_database_adds_source_listing_text_quality_column(tmp_path) -> None:
+    db_path = tmp_path / "legacy-source-listings.sqlite3"
+    engine = create_database_engine(f"sqlite:///{db_path}")
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                CREATE TABLE source_listings (
+                    id INTEGER PRIMARY KEY,
+                    source VARCHAR(64) NOT NULL,
+                    source_job_id VARCHAR(255) NOT NULL
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO source_listings (id, source, source_job_id)
+                VALUES (1, 'lever', 'job-1')
                 """
             )
         )
 
     init_database(engine=engine)
 
-    columns = {column["name"] for column in inspect(engine).get_columns("skills")}
-    assert {"taxonomy_version", "source_updated_at", "updated_at"}.issubset(columns)
+    columns = {
+        column["name"] for column in inspect(engine).get_columns("source_listings")
+    }
+    with engine.connect() as connection:
+        text_quality = connection.execute(
+            text("SELECT text_quality FROM source_listings WHERE id = 1")
+        ).scalar_one()
+
+    assert "text_quality" in columns
+    assert text_quality == "full_text"
 
 
 def test_file_backed_sqlite_uses_wal_and_busy_timeout(tmp_path) -> None:

@@ -1,0 +1,68 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "AGENT_QUALITY_HOME=/home/harry/Documents/Github-Projects/personal-projects/RoleRadar/.agent-quality/local PYTHONPATH=/home/harry/Documents/Github-Projects/personal-projects/quality-flywheel/agent-quality/src python3 -m agent_quality.cli hook codex SessionStart"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "AGENT_QUALITY_HOME=/home/harry/Documents/Github-Projects/personal-projects/RoleRadar/.agent-quality/local PYTHONPATH=/home/harry/Documents/Github-Projects/personal-projects/quality-flywheel/agent-quality/src python3 -m agent_quality.cli hook codex UserPromptSubmit"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "AGENT_QUALITY_HOME=/home/harry/Documents/Github-Projects/personal-projects/RoleRadar/.agent-quality/local PYTHONPATH=/home/harry/Documents/Github-Projects/personal-projects/quality-flywheel/agent-quality/src python3 -m agent_quality.cli hook codex PreToolUse"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "AGENT_QUALITY_HOME=/home/harry/Documents/Github-Projects/personal-projects/RoleRadar/.agent-quality/local PYTHONPATH=/home/harry/Documents/Github-Projects/personal-projects/quality-flywheel/agent-quality/src python3 -m agent_quality.cli hook codex PostToolUse"
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "AGENT_QUALITY_HOME=/home/harry/Documents/Github-Projects/personal-projects/RoleRadar/.agent-quality/local PYTHONPATH=/home/harry/Documents/Github-Projects/personal-projects/quality-flywheel/agent-quality/src python3 -m agent_quality.cli hook codex PermissionRequest"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "AGENT_QUALITY_HOME=/home/harry/Documents/Github-Projects/personal-projects/RoleRadar/.agent-quality/local PYTHONPATH=/home/harry/Documents/Github-Projects/personal-projects/quality-flywheel/agent-quality/src python3 -m agent_quality.cli hook codex Stop",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}

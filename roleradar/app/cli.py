@@ -5,8 +5,18 @@ from __future__ import annotations
 import click
 
 from roleradar import __version__
-from roleradar.analytics.salary_trends import salary_range_summaries
+from roleradar.analytics.salary_trends import (
+    salary_by_company,
+    salary_by_role_keyword,
+    salary_by_skill,
+    salary_by_source,
+    salary_coverage,
+    salary_coverage_by_source,
+    salary_range_summaries,
+    top_salary_listings,
+)
 from roleradar.analytics.skill_trends import (
+    skill_extraction_coverage_by_source,
     skills_by_company,
     skills_by_role_keyword,
     skills_by_source,
@@ -247,12 +257,14 @@ def report_skills(days: int, limit: int) -> None:
         source_rows = skills_by_source(session, days=days, limit=limit)
         company_rows = skills_by_company(session, days=days, limit=limit)
         role_rows = skills_by_role_keyword(session, days=days)
+        coverage_rows = skill_extraction_coverage_by_source(session, days=days)
 
     click.echo(
         f"Skill report: current snapshot, active postings seen in last {days} days"
     )
     click.echo("Trend caveat: growth is not reported until repeated windows exist.")
     click.echo("")
+    _echo_skill_coverage("Skill extraction coverage by source", coverage_rows)
     _echo_skill_counts("Top skills", top_rows)
     _echo_source_counts("Skills by source", source_rows)
     _echo_company_counts("Skills by company", company_rows)
@@ -261,10 +273,18 @@ def report_skills(days: int, limit: int) -> None:
 
 @report.command("salaries")
 @click.option("--days", default=30, show_default=True, type=click.IntRange(min=1))
-def report_salaries(days: int) -> None:
+@click.option("--limit", default=10, show_default=True, type=click.IntRange(min=1))
+def report_salaries(days: int, limit: int) -> None:
     """Show current-snapshot employer-provided salary summaries."""
     with _session_from_settings() as session:
         summaries = salary_range_summaries(session, days=days)
+        coverage = salary_coverage(session, days=days)
+        source_coverage = salary_coverage_by_source(session, days=days)
+        top_listings = top_salary_listings(session, days=days, limit=limit)
+        source_rows = salary_by_source(session, days=days, limit=limit)
+        company_rows = salary_by_company(session, days=days, limit=limit)
+        skill_rows = salary_by_skill(session, days=days, limit=limit)
+        role_rows = salary_by_role_keyword(session, days=days, limit=limit)
 
     click.echo(
         f"Salary report: current snapshot, active postings seen in last {days} days"
@@ -272,12 +292,23 @@ def report_salaries(days: int) -> None:
     click.echo("Trend caveat: growth is not reported until repeated windows exist.")
     click.echo("")
 
+    click.echo(
+        "Salary coverage: "
+        f"{coverage.salary_posting_count}/{coverage.total_posting_count} "
+        f"active postings ({coverage.disclosure_rate:.0%})"
+    )
+    _echo_salary_coverage("Salary coverage by source", source_coverage)
+    click.echo("")
+
     if not summaries:
         click.echo("No employer-provided salary data found.")
         return
 
     click.echo("Salary ranges")
-    click.echo("currency\tinterval\tpostings\tmin\tmax\tavg_min\tavg_max\tavg_midpoint")
+    click.echo(
+        "currency\tinterval\tpostings\tclosed_ranges\tmin\tmax\tavg_min\tavg_max"
+        "\tavg_midpoint\tavg_annualized_midpoint"
+    )
     for summary in summaries:
         click.echo(
             "\t".join(
@@ -285,14 +316,23 @@ def report_salaries(days: int) -> None:
                     summary.currency,
                     summary.interval,
                     str(summary.posting_count),
+                    str(summary.closed_range_count),
                     _format_number(summary.min_salary),
                     _format_number(summary.max_salary),
                     _format_number(summary.average_min_salary),
                     _format_number(summary.average_max_salary),
                     _format_number(summary.average_midpoint),
+                    _format_number(summary.average_annualized_midpoint),
                 ]
             )
         )
+    click.echo("")
+
+    _echo_salary_listings("Highest annualized salary listings", top_listings)
+    _echo_salary_segments("Annualized salary by source", source_rows)
+    _echo_salary_segments("Annualized salary by company", company_rows)
+    _echo_salary_segments("Annualized salary by skill", skill_rows)
+    _echo_salary_segments("Annualized salary by role/title keyword", role_rows)
 
 
 def _session_from_settings():
@@ -305,6 +345,82 @@ def _session_from_settings():
     init_database(engine=engine)
     session_factory = create_session_factory(engine)
     return session_factory()
+
+
+def _echo_skill_coverage(title: str, rows: list[object]) -> None:
+    click.echo(title)
+    if not rows:
+        click.echo("No active postings found.")
+        click.echo("")
+        return
+
+    click.echo("source\tpostings\tfull_text\tsnippet\textracted\tfull_text_rate")
+    for row in rows:
+        click.echo(
+            f"{row.source}\t{row.total_posting_count}\t"
+            f"{row.full_text_posting_count}\t{row.snippet_posting_count}\t"
+            f"{row.extracted_posting_count}\t{row.full_text_rate:.0%}"
+        )
+    click.echo("")
+
+
+def _echo_salary_coverage(title: str, rows: list[object]) -> None:
+    click.echo(title)
+    if not rows:
+        click.echo("No active postings found.")
+        return
+
+    click.echo("source\tpostings\twith_salary\tdisclosure_rate")
+    for row in rows:
+        click.echo(
+            f"{row.group}\t{row.total_posting_count}\t"
+            f"{row.salary_posting_count}\t{row.disclosure_rate:.0%}"
+        )
+
+
+def _echo_salary_segments(title: str, rows: list[object]) -> None:
+    click.echo(title)
+    if not rows:
+        click.echo("No annualized salary data found.")
+        click.echo("")
+        return
+
+    click.echo("segment\tpostings\tavg_annualized_midpoint")
+    for row in rows:
+        click.echo(
+            f"{row.segment}\t{row.posting_count}\t"
+            f"{_format_number(row.average_annualized_midpoint)}"
+        )
+    click.echo("")
+
+
+def _echo_salary_listings(title: str, rows: list[object]) -> None:
+    click.echo(title)
+    if not rows:
+        click.echo("No annualized salary listings found.")
+        click.echo("")
+        return
+
+    click.echo(
+        "company\ttitle\tsource\tcurrency\tinterval\tmin\tmax\tannualized_midpoint\turl"
+    )
+    for row in rows:
+        click.echo(
+            "\t".join(
+                [
+                    row.company_name,
+                    row.title,
+                    row.source,
+                    row.currency,
+                    row.interval,
+                    _format_number(row.salary_min),
+                    _format_number(row.salary_max),
+                    _format_number(row.annualized_midpoint),
+                    row.source_url or "",
+                ]
+            )
+        )
+    click.echo("")
 
 
 def _echo_skill_counts(title: str, rows: list[object]) -> None:

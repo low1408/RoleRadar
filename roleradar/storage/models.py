@@ -133,6 +133,7 @@ class SourceListing(Base):
     location: Mapped[str | None] = mapped_column(String(255))
     workplace_type: Mapped[str | None] = mapped_column(String(64))
     description_text: Mapped[str | None] = mapped_column(Text)
+    text_quality: Mapped[str | None] = mapped_column(String(32), default="full_text")
     salary_min: Mapped[float | None] = mapped_column(Float)
     salary_max: Mapped[float | None] = mapped_column(Float)
     salary_currency: Mapped[str | None] = mapped_column(String(3))
@@ -178,9 +179,7 @@ class Skill(Base):
     category: Mapped[str | None] = mapped_column(String(255))
     source_taxonomy: Mapped[str] = mapped_column(String(255), default="local")
     taxonomy_version: Mapped[str | None] = mapped_column(String(255))
-    source_updated_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True)
-    )
+    source_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=utc_now,

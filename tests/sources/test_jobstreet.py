@@ -78,11 +78,12 @@ def test_jobstreet_client_uses_chalice_search_parameters_and_paginates() -> None
             },
             "headers": {
                 "Accept": "application/json, text/plain, */*",
-                "Referer": "https://sg.jobstreet.com/",
-                "User-Agent": (
-                    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                    "(KHTML, like Gecko) Chrome/126.0 Safari/537.36"
-                ),
+                "Accept-Language": "en-US,en;q=0.9",
+                "Referer": "https://www.jobstreet.com.sg/",
+                "Origin": "https://www.jobstreet.com.sg",
+                "Sec-Fetch-Dest": "empty",
+                "Sec-Fetch-Mode": "cors",
+                "Sec-Fetch-Site": "same-origin",
             },
             "timeout": 7.5,
         },
@@ -97,11 +98,12 @@ def test_jobstreet_client_uses_chalice_search_parameters_and_paginates() -> None
             },
             "headers": {
                 "Accept": "application/json, text/plain, */*",
-                "Referer": "https://sg.jobstreet.com/",
-                "User-Agent": (
-                    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                    "(KHTML, like Gecko) Chrome/126.0 Safari/537.36"
-                ),
+                "Accept-Language": "en-US,en;q=0.9",
+                "Referer": "https://www.jobstreet.com.sg/",
+                "Origin": "https://www.jobstreet.com.sg",
+                "Sec-Fetch-Dest": "empty",
+                "Sec-Fetch-Mode": "cors",
+                "Sec-Fetch-Site": "same-origin",
             },
             "timeout": 7.5,
         },

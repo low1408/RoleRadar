@@ -33,7 +33,9 @@ class IngestionRunRepository:
     def __init__(self, session: Session) -> None:
         self.session = session
 
-    def create(self, *, source: str, parameters: dict[str, Any] | None = None) -> IngestionRun:
+    def create(
+        self, *, source: str, parameters: dict[str, Any] | None = None
+    ) -> IngestionRun:
         run = IngestionRun(source=source, parameters=parameters, status="running")
         self.session.add(run)
         self.session.flush()
@@ -52,7 +54,9 @@ class JobRepository:
     def __init__(self, session: Session) -> None:
         self.session = session
 
-    def get_or_create_company(self, *, name: str, industry: str | None = None) -> Company:
+    def get_or_create_company(
+        self, *, name: str, industry: str | None = None
+    ) -> Company:
         normalized_name = normalize_text(name)
         company = self.session.scalar(
             select(Company).where(Company.normalized_name == normalized_name)
@@ -62,7 +66,9 @@ class JobRepository:
                 company.industry = industry
             return company
 
-        company = Company(name=name.strip(), normalized_name=normalized_name, industry=industry)
+        company = Company(
+            name=name.strip(), normalized_name=normalized_name, industry=industry
+        )
         self.session.add(company)
         self.session.flush()
         return company
@@ -79,7 +85,9 @@ class JobRepository:
         raw_payload: dict[str, Any] | None = None,
     ) -> Job:
         if canonical_url:
-            job = self.session.scalar(select(Job).where(Job.canonical_url == canonical_url))
+            job = self.session.scalar(
+                select(Job).where(Job.canonical_url == canonical_url)
+            )
             if job is not None:
                 job.last_seen_at = datetime.now(UTC)
                 job.description_text = description_text or job.description_text
@@ -115,6 +123,7 @@ class JobRepository:
         location: str | None = None,
         workplace_type: str | None = None,
         description_text: str | None = None,
+        text_quality: str | None = None,
         salary_min: float | None = None,
         salary_max: float | None = None,
         salary_currency: str | None = None,
@@ -148,6 +157,7 @@ class JobRepository:
         listing.location = location
         listing.workplace_type = workplace_type
         listing.description_text = description_text
+        listing.text_quality = text_quality or "full_text"
         listing.salary_min = salary_min
         listing.salary_max = salary_max
         listing.salary_currency = salary_currency

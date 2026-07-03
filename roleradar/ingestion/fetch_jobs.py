@@ -444,6 +444,7 @@ def _persist_normalized_jobs(
             location=normalized_job.location,
             workplace_type=normalized_job.workplace_type,
             description_text=normalized_job.description_text,
+            text_quality=normalized_job.text_quality,
             salary_min=normalized_job.salary_min,
             salary_max=normalized_job.salary_max,
             salary_currency=normalized_job.salary_currency,
