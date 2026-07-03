@@ -201,6 +201,45 @@ def normalize_careers_gov_posting(posting: dict[str, Any]) -> NormalizedJob:
     )
 
 
+def normalize_jobstreet_posting(posting: dict[str, Any]) -> NormalizedJob:
+    """Normalize one JobStreet posting page payload."""
+    description_text = (
+        _clean(posting.get("description_text"))
+        or _html_to_text(_clean(posting.get("description_html")) or "")
+        or _clean(posting.get("meta_description"))
+    )
+    source_url = _clean(posting.get("source_url")) or _clean(
+        posting.get("canonical_url")
+    )
+    canonical_url = _clean(posting.get("canonical_url")) or source_url
+    source_id = str(
+        _clean(posting.get("source_job_id"))
+        or _clean(posting.get("id"))
+        or canonical_url
+        or _clean(posting.get("title"))
+    )
+
+    return NormalizedJob(
+        source="jobstreet",
+        source_job_id=source_id,
+        company_name=_clean(posting.get("company_name")) or "Unknown company",
+        title=_clean(posting.get("title")) or "Untitled role",
+        canonical_url=canonical_url,
+        source_url=source_url,
+        location=_clean(posting.get("location")) or "Singapore",
+        workplace_type=_clean(posting.get("workplace_type")) or None,
+        description_text=description_text,
+        salary_min=_to_float(posting.get("salary_min")),
+        salary_max=_to_float(posting.get("salary_max")),
+        salary_currency=_clean(posting.get("salary_currency")) or "SGD",
+        salary_interval=_clean(posting.get("salary_interval")),
+        content_hash=_content_hash(description_text),
+        raw_payload=posting,
+        text_quality="full_text" if description_text else "metadata",
+        source_updated_at=_parse_datetime(posting.get("date_posted")),
+    )
+
+
 def _dict_or_empty(value: object) -> dict[str, Any]:
     if isinstance(value, dict):
         return value

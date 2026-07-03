@@ -360,7 +360,6 @@ def test_ingest_jobs_uses_careers_gov_when_experimental_enabled(tmp_path) -> Non
         source="careers_gov",
         query="data analyst",
         max_pages=2,
-        enable_experimental_sources=True,
         careers_gov_throttle_seconds=0,
         careers_gov_client=FakeCareersGovClient(),
     )
@@ -387,20 +386,54 @@ def test_ingest_jobs_uses_careers_gov_when_experimental_enabled(tmp_path) -> Non
     assert len(job_skills) == 2
 
 
-def test_ingest_jobs_rejects_careers_gov_when_experimental_disabled(tmp_path) -> None:
-    db_url = f"sqlite:///{tmp_path / 'careers-gov-disabled.sqlite3'}"
 
-    try:
-        ingest_jobs(
-            database_url=db_url,
-            source="careers_gov",
-            query="data analyst",
-            careers_gov_client=FakeCareersGovClient(),
-        )
-    except ValueError as exc:
-        assert "Experimental source careers_gov is disabled" in str(exc)
-    else:
-        raise AssertionError("careers_gov ingestion should require explicit opt-in")
+def test_ingest_jobs_uses_jobstreet_posting_url(tmp_path) -> None:
+    class FakeJobStreetClient:
+        def fetch_postings(self, site: str) -> list[dict]:
+            assert site == "https://sg.jobstreet.com/job/123456"
+            return [
+                {
+                    "source_job_id": "seek-123456",
+                    "title": "Data Analyst",
+                    "company_name": "Example Pte Ltd",
+                    "canonical_url": "https://sg.jobstreet.com/job/123456",
+                    "source_url": "https://sg.jobstreet.com/job/123456",
+                    "location": "Singapore",
+                    "workplace_type": "FULL_TIME",
+                    "description_text": "Python and SQL role.",
+                    "salary_min": 5000,
+                    "salary_max": 7000,
+                    "salary_currency": "SGD",
+                    "salary_interval": "month",
+                    "date_posted": "2026-07-01T01:02:03Z",
+                }
+            ]
+
+    db_url = f"sqlite:///{tmp_path / 'jobstreet.sqlite3'}"
+
+    result = ingest_jobs(
+        database_url=db_url,
+        source="jobstreet",
+        posting_url="https://sg.jobstreet.com/job/123456",
+        jobstreet_client=FakeJobStreetClient(),
+    )
+
+    assert result.targets_seen == 1
+    assert result.targets_ingested == 1
+    assert result.targets_failed == 0
+    assert result.jobs_seen == 1
+    assert result.source_listings_upserted == 1
+    assert result.observations_created == 1
+
+    engine = create_database_engine(db_url)
+    session_factory = create_session_factory(engine)
+    with session_factory() as session:
+        listing = session.scalars(select(SourceListing)).one()
+
+    assert listing.source == "jobstreet"
+    assert listing.source_job_id == "seek-123456"
+    assert listing.salary_min == 5000
+    assert listing.salary_max == 7000
 
 
 def _write_seed_file(seed_file) -> None:

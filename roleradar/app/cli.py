@@ -14,7 +14,7 @@ from roleradar.analytics.skill_trends import (
 )
 from roleradar.config.settings import Settings
 from roleradar.ingestion.fetch_jobs import ingest_jobs
-from roleradar.sources.jobstreet import JOBSTREET_SOURCE, jobstreet_blocked_message
+from roleradar.sources.jobstreet import JOBSTREET_SOURCE
 from roleradar.sources.seed_loader import load_taxonomy_seed
 from roleradar.sources.ssg_wsg import sync_taxonomy_from_ssg_wsg
 from roleradar.storage.database import (
@@ -39,7 +39,6 @@ def show_config() -> None:
     click.echo(f"log_level: {settings.log_level}")
     click.echo(f"sqlite_wal: {settings.sqlite_wal}")
     click.echo(f"sqlite_busy_timeout_ms: {settings.sqlite_busy_timeout_ms}")
-    click.echo(f"enable_experimental_sources: {settings.enable_experimental_sources}")
     click.echo(f"careers_gov_timeout_seconds: {settings.careers_gov_timeout_seconds}")
     click.echo(f"careers_gov_throttle_seconds: {settings.careers_gov_throttle_seconds}")
     click.echo(f"ssg_wsg_taxonomy_url: {settings.ssg_wsg_taxonomy_url}")
@@ -158,6 +157,7 @@ def sync_taxonomy(source: str) -> None:
     type=click.Path(exists=True, dir_okay=False, path_type=str),
     help="CSV file containing target companies for board-based sources.",
 )
+@click.option("--posting-url", help="Single JobStreet posting URL to ingest.")
 @click.option("--query", help="Search query for API-based ingestion.")
 @click.option("--location", help="Location filter for Adzuna ingestion.")
 @click.option("--country", default="sg", show_default=True, help="Adzuna country code.")
@@ -178,6 +178,7 @@ def sync_taxonomy(source: str) -> None:
 def ingest(
     source: str,
     targets_file: str | None,
+    posting_url: str | None,
     query: str | None,
     location: str | None,
     country: str,
@@ -186,16 +187,15 @@ def ingest(
 ) -> None:
     """Ingest jobs from a configured source."""
     settings = Settings()
-    if source == JOBSTREET_SOURCE:
-        raise click.UsageError(jobstreet_blocked_message())
     if source == "adzuna":
         if not query or not location:
             raise click.UsageError("Adzuna ingestion requires --query and --location.")
     elif source == "careers_gov":
-        if not settings.enable_experimental_sources:
+        pass
+    elif source == JOBSTREET_SOURCE:
+        if not posting_url and targets_file is None:
             raise click.UsageError(
-                "Experimental sources are disabled. Set "
-                "ROLERADAR_ENABLE_EXPERIMENTAL_SOURCES=true to use careers_gov."
+                "JobStreet ingestion requires --posting-url or --targets."
             )
     elif targets_file is None:
         raise click.UsageError(f"{source} ingestion requires --targets.")
@@ -204,6 +204,7 @@ def ingest(
         database_url=settings.database_url,
         source=source,
         targets_file=targets_file,
+        posting_url=posting_url,
         query=query,
         location=location,
         country=country,
@@ -211,7 +212,6 @@ def ingest(
         max_pages=max_pages,
         adzuna_app_id=settings.adzuna_app_id,
         adzuna_app_key=settings.adzuna_app_key,
-        enable_experimental_sources=settings.enable_experimental_sources,
         careers_gov_timeout_seconds=settings.careers_gov_timeout_seconds,
         careers_gov_throttle_seconds=settings.careers_gov_throttle_seconds,
         sqlite_wal=settings.sqlite_wal,

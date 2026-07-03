@@ -52,16 +52,15 @@ def test_ingest_help_lists_adzuna_source() -> None:
     assert "[adzuna|careers_gov|greenhouse|jobstreet|lever]" in result.output
     assert "--query" in result.output
     assert "--location" in result.output
+    assert "--posting-url" in result.output
     assert "--max-pages" in result.output
 
 
-def test_jobstreet_ingest_is_blocked_pending_permission() -> None:
+def test_jobstreet_ingest_requires_posting_url_or_targets() -> None:
     result = CliRunner().invoke(cli, ["ingest", "--source", "jobstreet"])
 
     assert result.exit_code != 0
-    assert "JobStreet integration is blocked" in result.output
-    assert "docs/jobstreet_access_requirements.md" in result.output
-    assert "HTML scraping" in result.output
+    assert "JobStreet ingestion requires --posting-url or --targets" in result.output
 
 
 def test_adzuna_ingest_requires_query_and_location() -> None:
@@ -70,12 +69,6 @@ def test_adzuna_ingest_requires_query_and_location() -> None:
     assert result.exit_code != 0
     assert "Adzuna ingestion requires --query and --location" in result.output
 
-
-def test_careers_gov_ingest_requires_experimental_flag() -> None:
-    result = CliRunner().invoke(cli, ["ingest", "--source", "careers_gov"])
-
-    assert result.exit_code != 0
-    assert "ROLERADAR_ENABLE_EXPERIMENTAL_SOURCES=true" in result.output
 
 
 def test_sync_taxonomy_missing_credentials_skips(tmp_path) -> None:

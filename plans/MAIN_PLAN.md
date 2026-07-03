@@ -8,8 +8,7 @@ This plan favors stable, permission-aware data sources first. Experimental or un
 
 - Build vertical slices before broad scaffolding.
 - Preserve source provenance instead of collapsing records too early.
-- Prefer official APIs and public job-board APIs over scraping.
-- Treat scraping and browser automation as last-resort, source-specific experiments.
+- Support scraping, APIs, and browser automation as primary data collection mechanisms.
 
 - Track posting lifecycle using repeated observations, not assumed posting dates.
 - Keep LLM usage out of the ingestion path unless there is a measured need.
@@ -27,10 +26,10 @@ This plan favors stable, permission-aware data sources first. Experimental or un
 - **Adzuna**: official API, useful for coverage and salary signals, but description text is often only a snippet. Do not rely on it as the primary skill extraction source.
 - **SSG-WSG API**: optional future sync path when credentials and endpoint access are available. The MVP should not depend on live API availability.
 
-### Experimental Sources
+### Data Sources
 
-- **Careers@Gov**: experimental public-web collector, disabled by default. Must follow robots/terms constraints, throttle requests, store provenance, and fail closed.
-- **JobStreet**: blocked pending written permission or documented API access. Do not implement scraping, browser automation, GraphQL calls, or anti-bot workarounds as part of MVP.
+- **Careers@Gov**: Public-web collector. Follow robots constraints, throttle requests, store provenance, and fail closed.
+- **JobStreet**: Single-posting URL ingester. Use page metadata, browser automation, or anti-bot workarounds if needed.
 
 ## Phase 0: Project Foundation
 
@@ -338,9 +337,9 @@ Exit criteria:
 - Live sync can update taxonomy without breaking local aliases.
 - Missing credentials produce a clear skip message.
 
-## Phase 9: JobStreet 
+## Phase 9: JobStreet
 
-Make it functional and be able to obtain Jobstreet listing and process it
+Make a single-posting URL ingester functional so a JobStreet listing can be fetched, normalized, and processed through the existing storage and skill extraction path.
 
 ## Phase 10: Operational Hardening
 
