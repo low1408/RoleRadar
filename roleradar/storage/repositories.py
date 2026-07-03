@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from roleradar.storage.models import (
     Company,
+    DuplicateAuditLog,
     DuplicateJobCandidate,
     IngestionRun,
     Job,
@@ -248,6 +249,61 @@ class JobRepository:
         self.session.add(candidate)
         self.session.flush()
         return candidate
+
+    def list_duplicate_candidates(
+        self,
+        *,
+        status: str | None = None,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> list[DuplicateJobCandidate]:
+        """Return reviewable duplicate candidates for the admin API."""
+        query = select(DuplicateJobCandidate).order_by(
+            DuplicateJobCandidate.created_at.desc(),
+            DuplicateJobCandidate.id.desc(),
+        )
+        if status:
+            query = query.where(DuplicateJobCandidate.status == status)
+        return list(self.session.scalars(query.limit(limit).offset(offset)).all())
+
+    def get_duplicate_candidate(
+        self, duplicate_candidate_id: int
+    ) -> DuplicateJobCandidate | None:
+        """Return one duplicate candidate by id."""
+        return self.session.get(DuplicateJobCandidate, duplicate_candidate_id)
+
+    def resolve_duplicate_candidate(
+        self,
+        *,
+        duplicate_candidate: DuplicateJobCandidate,
+        action: str,
+        actor: str = "local-user",
+        reason: str | None = None,
+        payload: dict[str, Any] | None = None,
+    ) -> DuplicateAuditLog:
+        """Mark a duplicate candidate reviewed and append an audit record."""
+        status_by_action = {
+            "merge": "merged",
+            "dismiss": "dismissed",
+            "keep_separate": "kept_separate",
+        }
+        if action not in status_by_action:
+            raise ValueError(f"unsupported duplicate resolution action: {action}")
+
+        previous_status = duplicate_candidate.status
+        duplicate_candidate.status = status_by_action[action]
+        audit_log = DuplicateAuditLog(
+            duplicate_candidate=duplicate_candidate,
+            action=action,
+            actor=actor,
+            reason=reason,
+            previous_status=previous_status,
+            new_status=duplicate_candidate.status,
+            payload=payload,
+        )
+        self.session.add(audit_log)
+        self.session.flush()
+        return audit_log
 
 
 class SkillRepository:

@@ -17,9 +17,14 @@ data/
 *.sqlite3
 *.db
 .env.example
+quorum/
 
 # SG developer certificate
 *.pem
+
+# SQLite runtime sidecars
+*.sqlite3-shm
+*.sqlite3-wal
 *.key
 *.crt
 *.cer

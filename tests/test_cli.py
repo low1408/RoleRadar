@@ -17,6 +17,7 @@ def test_cli_help_renders() -> None:
     assert result.exit_code == 0
     assert "Singapore-focused job market intelligence" in result.output
     assert "config" in result.output
+    assert "serve" in result.output
 
 
 def test_config_command_renders_defaults() -> None:

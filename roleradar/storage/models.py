@@ -299,3 +299,33 @@ class DuplicateJobCandidate(Base):
         back_populates="duplicate_candidates",
     )
     candidate_job: Mapped[Job] = relationship(foreign_keys=[candidate_job_id])
+    audit_logs: Mapped[list[DuplicateAuditLog]] = relationship(
+        back_populates="duplicate_candidate"
+    )
+
+
+class DuplicateAuditLog(Base):
+    """Audit log for manual duplicate candidate resolution."""
+
+    __tablename__ = "duplicate_audit_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    duplicate_candidate_id: Mapped[int] = mapped_column(
+        ForeignKey("duplicate_job_candidates.id"),
+        index=True,
+    )
+    action: Mapped[str] = mapped_column(String(32), index=True)
+    actor: Mapped[str] = mapped_column(String(255), default="local-user")
+    reason: Mapped[str | None] = mapped_column(Text)
+    previous_status: Mapped[str | None] = mapped_column(String(32))
+    new_status: Mapped[str] = mapped_column(String(32))
+    payload: Mapped[dict | None] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+        index=True,
+    )
+
+    duplicate_candidate: Mapped[DuplicateJobCandidate] = relationship(
+        back_populates="audit_logs"
+    )

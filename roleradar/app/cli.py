@@ -68,6 +68,18 @@ def init_db() -> None:
     click.echo(f"initialized database: {settings.database_url}")
 
 
+@cli.command("serve")
+@click.option("--host", default="127.0.0.1", show_default=True)
+@click.option("--port", default=8765, show_default=True, type=click.IntRange(min=1))
+@click.option("--reload", is_flag=True, help="Reload server on source changes.")
+def serve(host: str, port: int, reload: bool) -> None:
+    """Run the local web frontend and API server."""
+    from roleradar.app.server import run
+
+    click.echo(f"serving RoleRadar on http://{host}:{port}")
+    run(host=host, port=port, reload=reload)
+
+
 @cli.command("seed-taxonomy")
 @click.option(
     "--file",
