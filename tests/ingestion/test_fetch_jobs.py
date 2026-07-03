@@ -109,6 +109,43 @@ class FakeCareersGovClient:
         ]
 
 
+class FakeJobstreetClient:
+    def search_jobs(
+        self,
+        *,
+        query: str,
+        location: str,
+        max_pages: int = 1,
+    ) -> list[dict]:
+        assert query == "data analyst"
+        assert location == "Singapore"
+        assert max_pages == 2
+        return [
+            {
+                "id": "jobstreet-1",
+                "title": "Data Analyst",
+                "jobUrl": "/job/123",
+                "companyName": "Example Pte Ltd",
+                "locations": [{"label": "Singapore"}],
+                "workTypes": [{"label": "Full time"}],
+                "teaser": "Python and SQL role.",
+                "salaryLabel": "$5,000 - $7,000 per month",
+                "listingDate": "2026-07-01T01:02:03Z",
+            }
+        ]
+
+
+class FakeFailingJobstreetClient:
+    def search_jobs(
+        self,
+        *,
+        query: str,
+        location: str,
+        max_pages: int = 1,
+    ) -> list[dict]:
+        raise RuntimeError("Jobstreet returned a Cloudflare challenge")
+
+
 class PartiallyFailingGreenhouseClient:
     def fetch_postings(self, site: str) -> list[dict]:
         if site == "broken":
@@ -386,6 +423,57 @@ def test_ingest_jobs_uses_careers_gov_when_experimental_enabled(tmp_path) -> Non
     assert len(job_skills) == 2
 
 
+def test_ingest_jobs_uses_jobstreet_query_without_targets(tmp_path) -> None:
+    db_url = f"sqlite:///{tmp_path / 'jobstreet.sqlite3'}"
+    seed_file = tmp_path / "skills.csv"
+    _write_seed_file(seed_file)
+    _seed_taxonomy(db_url, seed_file)
+
+    result = ingest_jobs(
+        database_url=db_url,
+        source="jobstreet",
+        query="data analyst",
+        location="Singapore",
+        max_pages=2,
+        jobstreet_client=FakeJobstreetClient(),
+    )
+
+    assert result.targets_seen == 1
+    assert result.targets_ingested == 1
+    assert result.targets_failed == 0
+    assert result.jobs_seen == 1
+    assert result.source_listings_upserted == 1
+    assert result.observations_created == 1
+    assert result.job_skills_extracted == 0
+
+    engine = create_database_engine(db_url)
+    session_factory = create_session_factory(engine)
+    with session_factory() as session:
+        listing = session.scalars(select(SourceListing)).one()
+        assert listing.source == "jobstreet"
+        assert listing.source_job_id == "jobstreet-1"
+        assert listing.salary_min == 5000
+        assert listing.salary_max == 7000
+        assert listing.raw_payload["text_quality"] == "snippet"
+
+
+def test_ingest_jobs_returns_jobstreet_source_error(tmp_path) -> None:
+    db_url = f"sqlite:///{tmp_path / 'jobstreet-failed.sqlite3'}"
+
+    result = ingest_jobs(
+        database_url=db_url,
+        source="jobstreet",
+        query="data analyst",
+        location="Singapore",
+        jobstreet_client=FakeFailingJobstreetClient(),
+    )
+
+    assert result.targets_seen == 1
+    assert result.targets_ingested == 0
+    assert result.targets_failed == 1
+    assert result.jobs_seen == 0
+    assert result.error_message is not None
+    assert "Cloudflare challenge" in result.error_message
 
 
 def _write_seed_file(seed_file) -> None:

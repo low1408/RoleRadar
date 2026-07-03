@@ -2,6 +2,7 @@ from roleradar.ingestion.normalize_jobs import (
     normalize_adzuna_posting,
     normalize_careers_gov_posting,
     normalize_greenhouse_posting,
+    normalize_jobstreet_posting,
     normalize_lever_posting,
 )
 
@@ -127,3 +128,36 @@ def test_normalize_careers_gov_posting_extracts_api_fields() -> None:
     assert normalized.workplace_type == "Full Time"
     assert normalized.source_updated_at is not None
     assert normalized.raw_payload["source_api"] == "mycareersfuture"
+
+
+def test_normalize_jobstreet_posting_extracts_search_result_fields() -> None:
+    posting = {
+        "id": "jobstreet-1",
+        "title": "Data Analyst",
+        "jobUrl": "/job/123",
+        "companyName": "Example Pte Ltd",
+        "locations": [{"label": "Singapore"}],
+        "workTypes": [{"label": "Full time"}],
+        "teaser": "Use Python and SQL.",
+        "bulletPoints": ["Build dashboards."],
+        "salaryLabel": "$5,000 - $7,000 per month",
+        "listingDate": "2026-07-01T01:02:03Z",
+    }
+
+    normalized = normalize_jobstreet_posting(posting)
+
+    assert normalized.source == "jobstreet"
+    assert normalized.source_job_id == "jobstreet-1"
+    assert normalized.company_name == "Example Pte Ltd"
+    assert normalized.title == "Data Analyst"
+    assert normalized.canonical_url == "https://www.jobstreet.com.sg/job/123"
+    assert normalized.location == "Singapore"
+    assert normalized.workplace_type == "Full time"
+    assert "Build dashboards" in normalized.description_text
+    assert normalized.salary_min == 5000
+    assert normalized.salary_max == 7000
+    assert normalized.salary_currency == "SGD"
+    assert normalized.salary_interval == "monthly"
+    assert normalized.text_quality == "snippet"
+    assert normalized.source_updated_at is not None
+    assert normalized.raw_payload["source_api"] == "jobstreet_chalice_search"

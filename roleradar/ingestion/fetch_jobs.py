@@ -13,12 +13,14 @@ from roleradar.ingestion.normalize_jobs import (
     normalize_adzuna_posting,
     normalize_careers_gov_posting,
     normalize_greenhouse_posting,
+    normalize_jobstreet_posting,
     normalize_lever_posting,
 )
 from roleradar.sources.adzuna import AdzunaClient
 from roleradar.sources.base import JobSourceClient
 from roleradar.sources.careers_gov import CareersGovClient
 from roleradar.sources.greenhouse import GreenhouseClient
+from roleradar.sources.jobstreet import DEFAULT_SITE_KEY, JobstreetClient
 from roleradar.sources.lever import LeverClient
 from roleradar.storage.database import (
     create_database_engine,
@@ -28,7 +30,7 @@ from roleradar.storage.database import (
 from roleradar.storage.models import IngestionRun
 from roleradar.storage.repositories import IngestionRunRepository, JobRepository
 
-SUPPORTED_SOURCES = ("adzuna", "careers_gov", "greenhouse", "lever")
+SUPPORTED_SOURCES = ("adzuna", "careers_gov", "greenhouse", "jobstreet", "lever")
 
 
 @dataclass(frozen=True)
@@ -55,6 +57,7 @@ class IngestionResult:
     observations_created: int
     job_skills_extracted: int
     duplicate_candidates: int
+    error_message: str | None = None
 
 
 @dataclass(frozen=True)
@@ -112,10 +115,13 @@ def ingest_jobs(
     sqlite_busy_timeout_ms: int = 5000,
     careers_gov_timeout_seconds: float = 20.0,
     careers_gov_throttle_seconds: float = 1.0,
+    jobstreet_site_key: str = DEFAULT_SITE_KEY,
+    jobstreet_timeout_seconds: float = 20.0,
     adzuna_app_id: str | None = None,
     adzuna_app_key: str | None = None,
     adzuna_client: AdzunaClient | None = None,
     careers_gov_client: CareersGovClient | None = None,
+    jobstreet_client: JobstreetClient | None = None,
     lever_client: LeverClient | None = None,
     greenhouse_client: GreenhouseClient | None = None,
 ) -> IngestionResult:
@@ -129,7 +135,7 @@ def ingest_jobs(
     )
     handler = (
         None
-        if source in {"adzuna", "careers_gov"}
+        if source in {"adzuna", "careers_gov", "jobstreet"}
         else _source_handler(
             source=source,
             lever_client=lever_client,
@@ -158,6 +164,9 @@ def ingest_jobs(
                 "country": country,
                 "results_per_page": results_per_page,
                 "max_pages": max_pages,
+                "jobstreet_site_key": (
+                    jobstreet_site_key if source == "jobstreet" else None
+                ),
             },
         )
 
@@ -188,6 +197,19 @@ def ingest_jobs(
                 throttle_seconds=careers_gov_throttle_seconds,
                 careers_gov_client=careers_gov_client,
             )
+        elif source == "jobstreet":
+            counters.targets_seen = 1
+            _ingest_jobstreet(
+                counters=counters,
+                run=run,
+                job_repo=job_repo,
+                query=query,
+                location=location,
+                max_pages=max_pages,
+                site_key=jobstreet_site_key,
+                timeout_seconds=jobstreet_timeout_seconds,
+                jobstreet_client=jobstreet_client,
+            )
         else:
             counters.targets_seen = len(targets)
             _ingest_target_boards(
@@ -204,7 +226,11 @@ def ingest_jobs(
         run_repo.complete(run, status=run_status)
         session.commit()
 
-    return IngestionResult(source=source, **counters.as_result_kwargs())
+    return IngestionResult(
+        source=source,
+        error_message=run.error_message,
+        **counters.as_result_kwargs(),
+    )
 
 
 @dataclass
@@ -301,6 +327,42 @@ def _ingest_careers_gov(
     except Exception as exc:  # noqa: BLE001 - source failures are isolated.
         counters.targets_failed = 1
         run.error_message = f"careers_gov search failed: {exc}"
+        return
+
+    counters.targets_ingested = 1
+    counters.add_persisted(
+        _persist_normalized_jobs(
+            normalized_jobs=normalized_jobs,
+            run=run,
+            job_repo=job_repo,
+        )
+    )
+
+
+def _ingest_jobstreet(
+    *,
+    counters: _Counters,
+    run: IngestionRun,
+    job_repo: JobRepository,
+    query: str | None,
+    location: str | None,
+    max_pages: int,
+    site_key: str,
+    timeout_seconds: float,
+    jobstreet_client: JobstreetClient | None,
+) -> None:
+    try:
+        normalized_jobs = _fetch_jobstreet_jobs(
+            query=query,
+            location=location,
+            max_pages=max_pages,
+            site_key=site_key,
+            timeout_seconds=timeout_seconds,
+            jobstreet_client=jobstreet_client,
+        )
+    except Exception as exc:  # noqa: BLE001 - source failures are isolated.
+        counters.targets_failed = 1
+        run.error_message = f"jobstreet search failed: {exc}"
         return
 
     counters.targets_ingested = 1
@@ -461,12 +523,35 @@ def _fetch_careers_gov_jobs(
     return [normalize_careers_gov_posting(posting) for posting in postings]
 
 
+def _fetch_jobstreet_jobs(
+    *,
+    query: str | None,
+    location: str | None,
+    max_pages: int,
+    site_key: str,
+    timeout_seconds: float,
+    jobstreet_client: JobstreetClient | None,
+) -> list[NormalizedJob]:
+    if not query or not location:
+        raise ValueError("Jobstreet ingestion requires query and location")
+    client = jobstreet_client or JobstreetClient(
+        site_key=site_key,
+        timeout_seconds=timeout_seconds,
+    )
+    postings = client.search_jobs(
+        query=query,
+        location=location,
+        max_pages=max_pages,
+    )
+    return [normalize_jobstreet_posting(posting) for posting in postings]
+
+
 def _targets_for_source(
     *,
     source: str,
     targets_file: str | Path | None,
 ) -> list[TargetCompany]:
-    if source in {"adzuna", "careers_gov"}:
+    if source in {"adzuna", "careers_gov", "jobstreet"}:
         return []
     if targets_file is None:
         raise ValueError(f"{source} ingestion requires targets_file")

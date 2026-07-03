@@ -336,8 +336,19 @@ Exit criteria:
 - Live sync can update taxonomy without breaking local aliases.
 - Missing credentials produce a clear skip message.'
 
-## Phase 9: 
+## Phase 9: Jobstreet chalice search API
+How the chalice-search API Works
+This is a standard RESTful HTTP GET endpoint. When the JobStreet frontend performs a search, it queries this endpoint, which returns clean structured JSON without needing to scrape raw HTML.
 
+Request Structure:
+HTTP Method: GET
+Base URL: https://www.jobstreet.com.sg/api/chalice-search/v4/search
+Query Parameters:
+siteKey: Identifies the regional portal (for Singapore, it is SG-Main).
+keywords: The search query (e.g., "data analyst").
+where: The location filter (e.g., "Singapore").
+page: The page number for pagination.
+seekSelectAllPages: Boolean (typically true or false to regulate list paging).
 
 ## Phase 10: Operational Hardening
 

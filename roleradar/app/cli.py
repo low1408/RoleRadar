@@ -40,6 +40,8 @@ def show_config() -> None:
     click.echo(f"sqlite_busy_timeout_ms: {settings.sqlite_busy_timeout_ms}")
     click.echo(f"careers_gov_timeout_seconds: {settings.careers_gov_timeout_seconds}")
     click.echo(f"careers_gov_throttle_seconds: {settings.careers_gov_throttle_seconds}")
+    click.echo(f"jobstreet_site_key: {settings.jobstreet_site_key}")
+    click.echo(f"jobstreet_timeout_seconds: {settings.jobstreet_timeout_seconds}")
     click.echo(f"ssg_wsg_taxonomy_url: {settings.ssg_wsg_taxonomy_url}")
     click.echo(f"ssg_wsg_timeout_seconds: {settings.ssg_wsg_timeout_seconds}")
     click.echo(
@@ -146,7 +148,7 @@ def sync_taxonomy(source: str) -> None:
 @click.option(
     "--source",
     required=True,
-    type=click.Choice(["adzuna", "careers_gov", "greenhouse", "lever"]),
+    type=click.Choice(["adzuna", "careers_gov", "greenhouse", "jobstreet", "lever"]),
     help="Source to ingest.",
 )
 @click.option(
@@ -157,7 +159,7 @@ def sync_taxonomy(source: str) -> None:
     help="CSV file containing target companies for board-based sources.",
 )
 @click.option("--query", help="Search query for API-based ingestion.")
-@click.option("--location", help="Location filter for Adzuna ingestion.")
+@click.option("--location", help="Location filter for API-based ingestion.")
 @click.option("--country", default="sg", show_default=True, help="Adzuna country code.")
 @click.option(
     "--results-per-page",
@@ -187,6 +189,11 @@ def ingest(
     if source == "adzuna":
         if not query or not location:
             raise click.UsageError("Adzuna ingestion requires --query and --location.")
+    elif source == "jobstreet":
+        if not query or not location:
+            raise click.UsageError(
+                "Jobstreet ingestion requires --query and --location."
+            )
     elif source == "careers_gov":
         pass
     elif targets_file is None:
@@ -205,6 +212,8 @@ def ingest(
         adzuna_app_key=settings.adzuna_app_key,
         careers_gov_timeout_seconds=settings.careers_gov_timeout_seconds,
         careers_gov_throttle_seconds=settings.careers_gov_throttle_seconds,
+        jobstreet_site_key=settings.jobstreet_site_key,
+        jobstreet_timeout_seconds=settings.jobstreet_timeout_seconds,
         sqlite_wal=settings.sqlite_wal,
         sqlite_busy_timeout_ms=settings.sqlite_busy_timeout_ms,
     )
@@ -219,6 +228,8 @@ def ingest(
         f"job_skills={result.job_skills_extracted} "
         f"duplicate_candidates={result.duplicate_candidates}"
     )
+    if result.error_message:
+        click.echo(f"error: {result.error_message}")
 
 
 @cli.group("report")

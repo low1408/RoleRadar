@@ -49,11 +49,10 @@ def test_ingest_help_lists_adzuna_source() -> None:
     result = CliRunner().invoke(cli, ["ingest", "--help"])
 
     assert result.exit_code == 0
-    assert "[adzuna|careers_gov|greenhouse|lever]" in result.output
+    assert "[adzuna|careers_gov|greenhouse|jobstreet|lever]" in result.output
     assert "--query" in result.output
     assert "--location" in result.output
     assert "--max-pages" in result.output
-
 
 
 def test_adzuna_ingest_requires_query_and_location() -> None:
@@ -62,6 +61,12 @@ def test_adzuna_ingest_requires_query_and_location() -> None:
     assert result.exit_code != 0
     assert "Adzuna ingestion requires --query and --location" in result.output
 
+
+def test_jobstreet_ingest_requires_query_and_location() -> None:
+    result = CliRunner().invoke(cli, ["ingest", "--source", "jobstreet"])
+
+    assert result.exit_code != 0
+    assert "Jobstreet ingestion requires --query and --location" in result.output
 
 
 def test_sync_taxonomy_missing_credentials_skips(tmp_path) -> None:

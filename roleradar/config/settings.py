@@ -22,6 +22,8 @@ class Settings(BaseSettings):
     sqlite_busy_timeout_ms: int = Field(default=5000, ge=0)
     careers_gov_timeout_seconds: float = Field(default=20.0, ge=0)
     careers_gov_throttle_seconds: float = Field(default=1.0, ge=0)
+    jobstreet_site_key: str = Field(default="SG-Main")
+    jobstreet_timeout_seconds: float = Field(default=20.0, ge=0)
 
     adzuna_app_id: str | None = Field(default=None, repr=False)
     adzuna_app_key: str | None = Field(default=None, repr=False)

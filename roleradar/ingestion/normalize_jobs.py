@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from html.parser import HTMLParser
 from typing import Any
+from urllib.parse import urljoin
 
 
 @dataclass(frozen=True)
@@ -44,9 +46,7 @@ def normalize_lever_posting(
     )
     title = _clean(posting.get("text")) or "Untitled role"
     categories = (
-        posting.get("categories")
-        if isinstance(posting.get("categories"), dict)
-        else {}
+        posting.get("categories") if isinstance(posting.get("categories"), dict) else {}
     )
     location = _clean(categories.get("location"))
     workplace_type = _clean(categories.get("commitment"))
@@ -65,8 +65,7 @@ def normalize_lever_posting(
         canonical_url=(
             _clean(posting.get("hostedUrl")) or _clean(posting.get("applyUrl"))
         ),
-        source_url=_clean(posting.get("hostedUrl"))
-        or _clean(posting.get("applyUrl")),
+        source_url=_clean(posting.get("hostedUrl")) or _clean(posting.get("applyUrl")),
         location=location,
         workplace_type=workplace_type,
         description_text=description_text,
@@ -127,9 +126,7 @@ def normalize_adzuna_posting(posting: dict[str, Any]) -> NormalizedJob:
     source_id = str(
         posting.get("id") or posting.get("redirect_url") or posting.get("title")
     )
-    company = (
-        posting.get("company") if isinstance(posting.get("company"), dict) else {}
-    )
+    company = posting.get("company") if isinstance(posting.get("company"), dict) else {}
     location = (
         posting.get("location") if isinstance(posting.get("location"), dict) else {}
     )
@@ -201,6 +198,56 @@ def normalize_careers_gov_posting(posting: dict[str, Any]) -> NormalizedJob:
     )
 
 
+def normalize_jobstreet_posting(posting: dict[str, Any]) -> NormalizedJob:
+    """Normalize one Jobstreet chalice-search result."""
+    source_url = _jobstreet_url(posting)
+    source_id = str(
+        posting.get("id")
+        or posting.get("jobId")
+        or posting.get("listingId")
+        or posting.get("advertisementId")
+        or source_url
+        or posting.get("title")
+    )
+    description_text = _jobstreet_description_text(posting)
+    text_quality = (
+        "full_text" if _has_full_jobstreet_description(posting) else "snippet"
+    )
+    salary_min, salary_max, salary_currency, salary_interval = _jobstreet_salary(
+        posting
+    )
+
+    return NormalizedJob(
+        source="jobstreet",
+        source_job_id=source_id,
+        company_name=_jobstreet_company_name(posting),
+        title=_clean(posting.get("title")) or "Untitled role",
+        canonical_url=source_url,
+        source_url=source_url,
+        location=_jobstreet_location(posting),
+        workplace_type=_jobstreet_work_type(posting),
+        description_text=description_text,
+        salary_min=salary_min,
+        salary_max=salary_max,
+        salary_currency=salary_currency,
+        salary_interval=salary_interval,
+        content_hash=_content_hash(description_text),
+        raw_payload={
+            **posting,
+            "source_api": "jobstreet_chalice_search",
+            "text_quality": text_quality,
+        },
+        text_quality=text_quality,
+        source_updated_at=_parse_datetime(
+            posting.get("listingDate")
+            or posting.get("listedAt")
+            or posting.get("postedAt")
+            or posting.get("createdAt")
+            or posting.get("updatedAt")
+        ),
+    )
+
+
 def _dict_or_empty(value: object) -> dict[str, Any]:
     if isinstance(value, dict):
         return value
@@ -225,6 +272,160 @@ def _join_nested_values(value: object, key: str) -> str | None:
         if label
     ]
     return "; ".join(labels) or None
+
+
+def _jobstreet_url(posting: dict[str, Any]) -> str | None:
+    value = (
+        _clean(posting.get("jobUrl"))
+        or _clean(posting.get("url"))
+        or _clean(posting.get("listingUrl"))
+        or _clean(posting.get("applyUrl"))
+    )
+    if not value:
+        return None
+    return urljoin("https://www.jobstreet.com.sg/", value)
+
+
+def _jobstreet_company_name(posting: dict[str, Any]) -> str:
+    advertiser = _dict_or_empty(posting.get("advertiser"))
+    company = _dict_or_empty(posting.get("company"))
+    return (
+        _clean(posting.get("companyName"))
+        or _clean(advertiser.get("description"))
+        or _clean(advertiser.get("name"))
+        or _clean(company.get("name"))
+        or _clean(company.get("displayName"))
+        or "Unknown company"
+    )
+
+
+def _jobstreet_location(posting: dict[str, Any]) -> str | None:
+    locations = posting.get("locations")
+    if isinstance(locations, list):
+        labels = [
+            _clean(item.get("label") or item.get("name") or item.get("description"))
+            for item in locations
+            if isinstance(item, dict)
+        ]
+        joined = ", ".join(label for label in labels if label)
+        if joined:
+            return joined
+    location = _dict_or_empty(posting.get("location"))
+    return (
+        _clean(location.get("label"))
+        or _clean(location.get("name"))
+        or _clean(location.get("description"))
+        or _clean(posting.get("location"))
+        or None
+    )
+
+
+def _jobstreet_work_type(posting: dict[str, Any]) -> str | None:
+    work_types = posting.get("workTypes")
+    if isinstance(work_types, list):
+        labels = [
+            (
+                _clean(item.get("label") or item.get("name") or item.get("description"))
+                if isinstance(item, dict)
+                else _clean(item)
+            )
+            for item in work_types
+        ]
+        joined = ", ".join(label for label in labels if label)
+        if joined:
+            return joined
+    work_type = _dict_or_empty(posting.get("workType"))
+    return (
+        _clean(work_type.get("label"))
+        or _clean(work_type.get("name"))
+        or _clean(work_type.get("description"))
+        or _clean(posting.get("workType"))
+        or None
+    )
+
+
+def _jobstreet_description_text(posting: dict[str, Any]) -> str | None:
+    parts: list[str] = []
+    for field in ("description", "jobDescription", "content"):
+        value = _clean(posting.get(field))
+        if value:
+            parts.append(_html_to_text(value) or value)
+
+    for field in ("abstract", "teaser", "shortDescription"):
+        value = _clean(posting.get(field))
+        if value:
+            parts.append(value)
+
+    bullet_points = posting.get("bulletPoints")
+    if isinstance(bullet_points, list):
+        parts.extend(_clean(item) for item in bullet_points if _clean(item))
+
+    return " ".join(parts) or None
+
+
+def _has_full_jobstreet_description(posting: dict[str, Any]) -> bool:
+    return any(
+        _clean(posting.get(field))
+        for field in ("description", "jobDescription", "content")
+    )
+
+
+def _jobstreet_salary(
+    posting: dict[str, Any],
+) -> tuple[float | None, float | None, str | None, str | None]:
+    salary = _dict_or_empty(posting.get("salary"))
+    raw_salary = posting.get("salary")
+    salary_label = _clean(
+        posting.get("salaryLabel")
+        or (raw_salary if not isinstance(raw_salary, dict) else None)
+    )
+    salary_min = _to_float(
+        salary.get("minimum")
+        or salary.get("min")
+        or salary.get("from")
+        or posting.get("salaryMin")
+    )
+    salary_max = _to_float(
+        salary.get("maximum")
+        or salary.get("max")
+        or salary.get("to")
+        or posting.get("salaryMax")
+    )
+
+    if salary_min is None and salary_label:
+        values = [
+            float(value.replace(",", ""))
+            for value in re.findall(r"\d[\d,]*(?:\.\d+)?", salary_label)
+        ]
+        if values:
+            salary_min = values[0]
+            salary_max = values[1] if len(values) > 1 else values[0]
+
+    currency = (
+        _clean(salary.get("currency"))
+        or _clean(salary.get("currencyCode"))
+        or ("SGD" if salary_min is not None or salary_label else None)
+    )
+    interval = (
+        _clean(salary.get("interval"))
+        or _clean(salary.get("period"))
+        or _clean(salary.get("type"))
+        or _salary_interval_from_label(salary_label)
+    )
+    return salary_min, salary_max, currency, interval
+
+
+def _salary_interval_from_label(value: str) -> str | None:
+    normalized = value.casefold()
+    if "month" in normalized:
+        return "monthly"
+    if "year" in normalized or "annum" in normalized:
+        return "yearly"
+    if "hour" in normalized:
+        return "hourly"
+    if "day" in normalized:
+        return "daily"
+    return None
 
 
 def _lever_description_text(posting: dict[str, Any]) -> str | None:
