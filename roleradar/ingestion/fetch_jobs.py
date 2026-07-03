@@ -13,14 +13,12 @@ from roleradar.ingestion.normalize_jobs import (
     normalize_adzuna_posting,
     normalize_careers_gov_posting,
     normalize_greenhouse_posting,
-    normalize_jobstreet_posting,
     normalize_lever_posting,
 )
 from roleradar.sources.adzuna import AdzunaClient
 from roleradar.sources.base import JobSourceClient
 from roleradar.sources.careers_gov import CareersGovClient
 from roleradar.sources.greenhouse import GreenhouseClient
-from roleradar.sources.jobstreet import JOBSTREET_SOURCE, JobStreetClient
 from roleradar.sources.lever import LeverClient
 from roleradar.storage.database import (
     create_database_engine,
@@ -30,7 +28,7 @@ from roleradar.storage.database import (
 from roleradar.storage.models import IngestionRun
 from roleradar.storage.repositories import IngestionRunRepository, JobRepository
 
-SUPPORTED_SOURCES = ("adzuna", "careers_gov", "greenhouse", JOBSTREET_SOURCE, "lever")
+SUPPORTED_SOURCES = ("adzuna", "careers_gov", "greenhouse", "lever")
 
 
 @dataclass(frozen=True)
@@ -89,11 +87,6 @@ class SourceHandler:
                 )
                 for posting in postings
             ]
-        if self.source_name == JOBSTREET_SOURCE:
-            return [
-                normalize_jobstreet_posting(posting=posting)
-                for posting in postings
-            ]
         raise ValueError(f"Unsupported ingestion source: {self.source_name}")
 
 
@@ -110,7 +103,6 @@ def ingest_jobs(
     database_url: str,
     source: str,
     targets_file: str | Path | None = None,
-    posting_url: str | None = None,
     query: str | None = None,
     location: str | None = None,
     country: str = "sg",
@@ -124,7 +116,6 @@ def ingest_jobs(
     adzuna_app_key: str | None = None,
     adzuna_client: AdzunaClient | None = None,
     careers_gov_client: CareersGovClient | None = None,
-    jobstreet_client: JobStreetClient | None = None,
     lever_client: LeverClient | None = None,
     greenhouse_client: GreenhouseClient | None = None,
 ) -> IngestionResult:
@@ -135,14 +126,12 @@ def ingest_jobs(
     targets = _targets_for_source(
         source=source,
         targets_file=targets_file,
-        posting_url=posting_url,
     )
     handler = (
         None
         if source in {"adzuna", "careers_gov"}
         else _source_handler(
             source=source,
-            jobstreet_client=jobstreet_client,
             lever_client=lever_client,
             greenhouse_client=greenhouse_client,
         )
@@ -164,7 +153,6 @@ def ingest_jobs(
             source=source,
             parameters={
                 "targets_file": str(targets_file) if targets_file else None,
-                "posting_url": posting_url,
                 "query": query,
                 "location": location,
                 "country": country,
@@ -477,18 +465,9 @@ def _targets_for_source(
     *,
     source: str,
     targets_file: str | Path | None,
-    posting_url: str | None,
 ) -> list[TargetCompany]:
     if source in {"adzuna", "careers_gov"}:
         return []
-    if source == JOBSTREET_SOURCE and posting_url:
-        return [
-            TargetCompany(
-                company_name="JobStreet",
-                source=JOBSTREET_SOURCE,
-                board_token_or_site=posting_url,
-            )
-        ]
     if targets_file is None:
         raise ValueError(f"{source} ingestion requires targets_file")
     return [
@@ -501,15 +480,9 @@ def _targets_for_source(
 def _source_handler(
     *,
     source: str,
-    jobstreet_client: JobStreetClient | None,
     lever_client: LeverClient | None,
     greenhouse_client: GreenhouseClient | None,
 ) -> SourceHandler:
-    if source == JOBSTREET_SOURCE:
-        return SourceHandler(
-            client=jobstreet_client or JobStreetClient(),
-            source_name=source,
-        )
     if source == "lever":
         return SourceHandler(client=lever_client or LeverClient(), source_name=source)
     if source == "greenhouse":

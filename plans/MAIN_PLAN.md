@@ -29,7 +29,6 @@ This plan favors stable, permission-aware data sources first. Experimental or un
 ### Data Sources
 
 - **Careers@Gov**: Public-web collector. Follow robots constraints, throttle requests, store provenance, and fail closed.
-- **JobStreet**: Single-posting URL ingester. Use page metadata, browser automation, or anti-bot workarounds if needed.
 
 ## Phase 0: Project Foundation
 
@@ -335,11 +334,10 @@ Verification:
 Exit criteria:
 
 - Live sync can update taxonomy without breaking local aliases.
-- Missing credentials produce a clear skip message.
+- Missing credentials produce a clear skip message.'
 
-## Phase 9: JobStreet
+## Phase 9: 
 
-Make a single-posting URL ingester functional so a JobStreet listing can be fetched, normalized, and processed through the existing storage and skill extraction path.
 
 ## Phase 10: Operational Hardening
 

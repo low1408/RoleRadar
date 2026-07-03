@@ -49,18 +49,11 @@ def test_ingest_help_lists_adzuna_source() -> None:
     result = CliRunner().invoke(cli, ["ingest", "--help"])
 
     assert result.exit_code == 0
-    assert "[adzuna|careers_gov|greenhouse|jobstreet|lever]" in result.output
+    assert "[adzuna|careers_gov|greenhouse|lever]" in result.output
     assert "--query" in result.output
     assert "--location" in result.output
-    assert "--posting-url" in result.output
     assert "--max-pages" in result.output
 
-
-def test_jobstreet_ingest_requires_posting_url_or_targets() -> None:
-    result = CliRunner().invoke(cli, ["ingest", "--source", "jobstreet"])
-
-    assert result.exit_code != 0
-    assert "JobStreet ingestion requires --posting-url or --targets" in result.output
 
 
 def test_adzuna_ingest_requires_query_and_location() -> None:

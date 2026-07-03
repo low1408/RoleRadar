@@ -14,7 +14,6 @@ from roleradar.analytics.skill_trends import (
 )
 from roleradar.config.settings import Settings
 from roleradar.ingestion.fetch_jobs import ingest_jobs
-from roleradar.sources.jobstreet import JOBSTREET_SOURCE
 from roleradar.sources.seed_loader import load_taxonomy_seed
 from roleradar.sources.ssg_wsg import sync_taxonomy_from_ssg_wsg
 from roleradar.storage.database import (
@@ -147,7 +146,7 @@ def sync_taxonomy(source: str) -> None:
 @click.option(
     "--source",
     required=True,
-    type=click.Choice(["adzuna", "careers_gov", "greenhouse", "jobstreet", "lever"]),
+    type=click.Choice(["adzuna", "careers_gov", "greenhouse", "lever"]),
     help="Source to ingest.",
 )
 @click.option(
@@ -157,7 +156,6 @@ def sync_taxonomy(source: str) -> None:
     type=click.Path(exists=True, dir_okay=False, path_type=str),
     help="CSV file containing target companies for board-based sources.",
 )
-@click.option("--posting-url", help="Single JobStreet posting URL to ingest.")
 @click.option("--query", help="Search query for API-based ingestion.")
 @click.option("--location", help="Location filter for Adzuna ingestion.")
 @click.option("--country", default="sg", show_default=True, help="Adzuna country code.")
@@ -178,7 +176,6 @@ def sync_taxonomy(source: str) -> None:
 def ingest(
     source: str,
     targets_file: str | None,
-    posting_url: str | None,
     query: str | None,
     location: str | None,
     country: str,
@@ -192,11 +189,6 @@ def ingest(
             raise click.UsageError("Adzuna ingestion requires --query and --location.")
     elif source == "careers_gov":
         pass
-    elif source == JOBSTREET_SOURCE:
-        if not posting_url and targets_file is None:
-            raise click.UsageError(
-                "JobStreet ingestion requires --posting-url or --targets."
-            )
     elif targets_file is None:
         raise click.UsageError(f"{source} ingestion requires --targets.")
 
@@ -204,7 +196,6 @@ def ingest(
         database_url=settings.database_url,
         source=source,
         targets_file=targets_file,
-        posting_url=posting_url,
         query=query,
         location=location,
         country=country,
