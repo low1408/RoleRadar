@@ -130,7 +130,14 @@ def test_normalize_careers_gov_posting_extracts_api_fields() -> None:
             "updatedAt": "2026-07-01T01:02:03Z",
         },
         "title": "Data Analyst",
-        "description": "<p>Use Python and SQL.</p>",
+        "description": (
+            "<h2>Responsibilities</h2>"
+            "<p>Support data mapping between Salesforce and external systems.</p>"
+            "<h2>Required competencies and certifications</h2>"
+            "<p>Minimum 4 years of experience in data analysis.</p>"
+            "<h2>Preferred competencies and qualifications</h2>"
+            "<p>Interest or exposure to Salesforce.</p>"
+        ),
         "postedCompany": {"name": "Example Pte Ltd"},
         "salary": {
             "minimum": 5000,
@@ -150,7 +157,7 @@ def test_normalize_careers_gov_posting_extracts_api_fields() -> None:
     assert normalized.source == "careers_gov"
     assert normalized.source_job_id == "mcf-1"
     assert normalized.company_name == "Example Pte Ltd"
-    assert normalized.description_text == "Use Python and SQL."
+    assert "Support data mapping" in normalized.description_text
     assert normalized.salary_min == 5000
     assert normalized.salary_max == 7000
     assert normalized.salary_currency == "SGD"
@@ -158,6 +165,22 @@ def test_normalize_careers_gov_posting_extracts_api_fields() -> None:
     assert normalized.workplace_type == "Full Time"
     assert normalized.source_updated_at is not None
     assert normalized.raw_payload["source_api"] == "mycareersfuture"
+    assert (
+        normalized.raw_payload["structured_sections"]["responsibilities"]
+        == "Support data mapping between Salesforce and external systems."
+    )
+    assert (
+        normalized.raw_payload["structured_sections"][
+            "required_competencies_and_certifications"
+        ]
+        == "Minimum 4 years of experience in data analysis."
+    )
+    assert (
+        normalized.raw_payload["structured_sections"][
+            "preferred_competencies_and_qualifications"
+        ]
+        == "Interest or exposure to Salesforce."
+    )
 
 
 def test_normalize_jobstreet_posting_extracts_search_result_fields() -> None:

@@ -44,6 +44,56 @@ class FakeGreenhouseClient:
         ]
 
 
+class FakeStructuredSalaryLeverClient:
+    def fetch_postings(self, site: str) -> list[dict]:
+        assert site == "example"
+        return [
+            {
+                "id": "structured-lever-1",
+                "text": "Data Analyst",
+                "hostedUrl": "https://jobs.lever.co/example/structured-lever-1",
+                "categories": {"location": "Singapore", "commitment": "Full-time"},
+                "descriptionPlain": (
+                    "Responsibilities Build trusted dashboards for regional finance "
+                    "users. Required competencies and certifications Strong SQL and "
+                    "Python data analysis experience. Preferred competencies and "
+                    "qualifications Tableau exposure."
+                ),
+                "salaryRange": {
+                    "min": 5500,
+                    "max": 7500,
+                    "currency": "SGD",
+                    "interval": "monthly",
+                },
+            }
+        ]
+
+
+class FakeStructuredSalaryGreenhouseClient:
+    def fetch_postings(self, site: str) -> list[dict]:
+        assert site == "example-gh"
+        return [
+            {
+                "id": 456,
+                "title": "Data Analyst",
+                "absolute_url": "https://boards.greenhouse.io/example-gh/jobs/456",
+                "location": {"name": "Singapore"},
+                "content": (
+                    "<p>Responsibilities: Build trusted dashboards for regional "
+                    "finance users.</p><p>Required competencies and certifications: "
+                    "Strong SQL and Python data analysis experience.</p><p>Preferred "
+                    "competencies and qualifications: Different bonus text.</p>"
+                ),
+                "compensation": {
+                    "min": 5500,
+                    "max": 7500,
+                    "currency": "SGD",
+                    "interval": "month",
+                },
+            }
+        ]
+
+
 class FakeAdzunaClient:
     def search_jobs(
         self,
@@ -106,6 +156,63 @@ class FakeCareersGovClient:
                     }
                 },
             }
+        ]
+
+
+class FakeDuplicateCareersGovClient:
+    def search_jobs(
+        self,
+        *,
+        query: str | None = None,
+        limit: int = 20,
+        max_pages: int = 1,
+    ) -> list[dict]:
+        assert query == "data analyst"
+        assert limit == 20
+        assert max_pages == 2
+        return [
+            {
+                "uuid": "mcf-1",
+                "metadata": {
+                    "jobPostId": "post-1",
+                    "updatedAt": "2026-07-01T01:02:03Z",
+                },
+                "title": "Data Analyst",
+                "description": "<p>Python and SQL role.</p>",
+                "postedCompany": {"name": "Example Pte Ltd"},
+                "salary": {
+                    "minimum": 5000,
+                    "maximum": 7000,
+                    "type": {"salaryType": "Monthly"},
+                },
+                "employmentTypes": [{"employmentType": "Full Time"}],
+                "_links": {
+                    "self": {
+                        "href": "https://api1.mycareersfuture.sg/v2/jobs/mcf-1",
+                    }
+                },
+            },
+            {
+                "uuid": "mcf-1",
+                "metadata": {
+                    "jobPostId": "post-1",
+                    "updatedAt": "2026-07-02T01:02:03Z",
+                },
+                "title": "Data Analyst",
+                "description": "<p>Python and SQL role.</p>",
+                "postedCompany": {"name": "Example Pte Ltd"},
+                "salary": {
+                    "minimum": 6000,
+                    "maximum": 8000,
+                    "type": {"salaryType": "Monthly"},
+                },
+                "employmentTypes": [{"employmentType": "Full Time"}],
+                "_links": {
+                    "self": {
+                        "href": "https://api1.mycareersfuture.sg/v2/jobs/mcf-1",
+                    }
+                },
+            },
         ]
 
 
@@ -320,6 +427,61 @@ def test_cross_source_duplicate_candidate_keeps_source_listings(tmp_path) -> Non
     assert candidates[0].status == "pending"
 
 
+def test_cross_source_duplicate_candidate_uses_structured_fields_and_salary(
+    tmp_path,
+) -> None:
+    db_url = f"sqlite:///{tmp_path / 'structured-duplicates.sqlite3'}"
+    seed_file = tmp_path / "skills.csv"
+    lever_targets = tmp_path / "lever-targets.csv"
+    greenhouse_targets = tmp_path / "greenhouse-targets.csv"
+    _write_seed_file(seed_file)
+    lever_targets.write_text(
+        "\n".join(
+            [
+                "company_name,source,board_token_or_site,enabled,notes",
+                "Example Pte Ltd,lever,example,true,",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    greenhouse_targets.write_text(
+        "\n".join(
+            [
+                "company_name,source,board_token_or_site,enabled,notes",
+                "Example Pte Ltd,greenhouse,example-gh,true,",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    _seed_taxonomy(db_url, seed_file)
+
+    ingest_jobs(
+        database_url=db_url,
+        source="lever",
+        targets_file=lever_targets,
+        lever_client=FakeStructuredSalaryLeverClient(),
+    )
+    result = ingest_jobs(
+        database_url=db_url,
+        source="greenhouse",
+        targets_file=greenhouse_targets,
+        greenhouse_client=FakeStructuredSalaryGreenhouseClient(),
+    )
+
+    assert result.duplicate_candidates == 1
+
+    engine = create_database_engine(db_url)
+    session_factory = create_session_factory(engine)
+    with session_factory() as session:
+        candidates = session.scalars(select(DuplicateJobCandidate)).all()
+
+    assert len(candidates) == 1
+    assert candidates[0].match_type == "structured_fields"
+    assert candidates[0].score == 0.9
+    assert "matching responsibilities" in candidates[0].reason
+    assert "matching salary range" in candidates[0].reason
+
+
 def test_target_failure_does_not_fail_whole_ingestion_run(tmp_path) -> None:
     db_url = f"sqlite:///{tmp_path / 'partial-failure.sqlite3'}"
     seed_file = tmp_path / "skills.csv"
@@ -422,6 +584,45 @@ def test_ingest_jobs_uses_careers_gov_when_experimental_enabled(tmp_path) -> Non
     assert listing.salary_min == 5000
     assert listing.salary_max == 7000
     assert len(job_skills) == 2
+
+
+def test_ingest_jobs_deduplicates_careers_gov_batch_by_source_job_id(
+    tmp_path,
+) -> None:
+    db_url = f"sqlite:///{tmp_path / 'careers-gov-dedupe.sqlite3'}"
+    seed_file = tmp_path / "skills.csv"
+    _write_seed_file(seed_file)
+    _seed_taxonomy(db_url, seed_file)
+
+    result = ingest_jobs(
+        database_url=db_url,
+        source="careers_gov",
+        query="data analyst",
+        max_pages=2,
+        careers_gov_throttle_seconds=0,
+        careers_gov_client=FakeDuplicateCareersGovClient(),
+    )
+
+    assert result.targets_seen == 1
+    assert result.targets_ingested == 1
+    assert result.targets_failed == 0
+    assert result.jobs_seen == 1
+    assert result.source_listings_upserted == 1
+    assert result.observations_created == 1
+    assert result.job_skills_extracted == 2
+
+    engine = create_database_engine(db_url)
+    session_factory = create_session_factory(engine)
+    with session_factory() as session:
+        listings = session.scalars(select(SourceListing)).all()
+        observations = session.scalars(select(PostingObservation)).all()
+
+    assert len(listings) == 1
+    assert listings[0].source == "careers_gov"
+    assert listings[0].source_job_id == "mcf-1"
+    assert listings[0].salary_min == 6000
+    assert listings[0].salary_max == 8000
+    assert len(observations) == 1
 
 
 def test_ingest_jobs_uses_jobstreet_query_without_targets(tmp_path) -> None:

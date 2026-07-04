@@ -9,6 +9,7 @@
   --border-main: #d8dee8;
   --border-strong: #c4ccd8;
   --accent: #0d9488;
+  --accent-soft: rgba(13, 148, 136, 0.12);
   --blue: #2563eb;
   --amber: #b45309;
   --danger: #b91c1c;
@@ -26,6 +27,7 @@ body.dark {
   --text-invert: #f8fafc;
   --border-main: #2d3748;
   --border-strong: #405066;
+  --accent-soft: rgba(13, 148, 136, 0.18);
   --shadow: 0 18px 44px rgba(0, 0, 0, 0.22);
 }
 
@@ -43,7 +45,8 @@ body {
 }
 
 button,
-input {
+input,
+select {
   font: inherit;
 }
 
@@ -259,6 +262,11 @@ button {
   color: #ffffff;
 }
 
+.action-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.64;
+}
+
 .kpi-strip {
   display: grid;
   grid-template-columns: repeat(4, minmax(150px, 1fr));
@@ -341,6 +349,301 @@ button {
   padding: 16px;
 }
 
+.role-family-panel {
+  margin-bottom: 16px;
+}
+
+.role-family-toolbar {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.role-family-toolbar .field-control {
+  max-width: 360px;
+}
+
+.role-family-list {
+  display: grid;
+  gap: 8px;
+}
+
+.role-family-row {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) repeat(3, minmax(104px, auto));
+  gap: 14px;
+  align-items: center;
+  width: 100%;
+  min-height: 66px;
+  border: 1px solid var(--border-main);
+  border-radius: 8px;
+  padding: 11px 12px;
+  background: var(--bg-panel);
+  color: var(--text-main);
+  text-align: left;
+  cursor: pointer;
+}
+
+.role-family-row:hover {
+  border-color: var(--border-strong);
+  background: var(--bg-muted);
+}
+
+.role-family-row.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.role-family-main,
+.role-family-metric {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.role-family-main small,
+.role-family-metric small {
+  overflow: hidden;
+  color: var(--text-soft);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.role-family-main strong {
+  font-size: 15px;
+}
+
+.role-family-metric {
+  justify-items: end;
+}
+
+.role-family-metric strong {
+  font-size: 16px;
+}
+
+.role-family-metric.salary strong {
+  font-size: 14px;
+}
+
+.hiring-company-list {
+  display: grid;
+  gap: 8px;
+}
+
+.hiring-company-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(72px, auto);
+  gap: 12px;
+  align-items: center;
+  width: 100%;
+  min-height: 58px;
+  border: 1px solid var(--border-main);
+  border-radius: 8px;
+  padding: 10px 11px;
+  background: var(--bg-panel);
+  color: var(--text-main);
+  text-align: left;
+  cursor: pointer;
+}
+
+.hiring-company-row:hover {
+  border-color: var(--border-strong);
+  background: var(--bg-muted);
+}
+
+.hiring-company-main,
+.hiring-company-metric {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.hiring-company-main strong,
+.hiring-company-main small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hiring-company-main small,
+.hiring-company-metric small {
+  color: var(--text-soft);
+  font-size: 12px;
+}
+
+.hiring-company-metric {
+  justify-items: end;
+}
+
+.hiring-company-metric strong {
+  font-size: 17px;
+}
+
+.load-grid {
+  display: grid;
+  grid-template-columns: minmax(340px, 0.8fr) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.load-form {
+  display: grid;
+  gap: 16px;
+}
+
+.field-grid {
+  display: grid;
+  gap: 12px;
+}
+
+.field-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.field-control {
+  display: grid;
+  gap: 7px;
+}
+
+.field-control span {
+  color: var(--text-soft);
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.field-control input,
+.field-control select {
+  width: 100%;
+  min-height: 40px;
+  border: 1px solid var(--border-main);
+  border-radius: 8px;
+  padding: 0 11px;
+  background: var(--bg-panel);
+  color: var(--text-main);
+}
+
+.field-control input:focus,
+.field-control select:focus {
+  border-color: var(--accent);
+  outline: 2px solid rgba(13, 148, 136, 0.16);
+}
+
+.field-control input:disabled,
+.field-control select:disabled {
+  cursor: not-allowed;
+  opacity: 0.62;
+}
+
+.field-control .field-hint {
+  color: var(--text-soft);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.toggle-control {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: var(--text-main);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.toggle-control input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
+}
+
+.evidence-filter-panel {
+  margin-bottom: 14px;
+}
+
+.evidence-filters {
+  display: grid;
+  grid-template-columns: minmax(240px, 360px) auto;
+  gap: 14px;
+  align-items: end;
+}
+
+.filter-summary {
+  display: grid;
+  gap: 2px;
+  min-height: 40px;
+  align-content: center;
+  justify-items: end;
+}
+
+.filter-summary strong {
+  font-size: 20px;
+  line-height: 1;
+}
+
+.filter-summary span {
+  color: var(--text-soft);
+  font-size: 12px;
+}
+
+.form-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.result-list {
+  display: grid;
+  gap: 12px;
+}
+
+.result-summary {
+  display: grid;
+  gap: 2px;
+  border: 1px solid var(--border-main);
+  border-radius: 8px;
+  padding: 14px;
+  background: var(--bg-muted);
+}
+
+.result-summary strong {
+  font-size: 26px;
+  line-height: 1;
+}
+
+.result-summary span {
+  color: var(--text-soft);
+  font-size: 13px;
+}
+
+.result-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  min-height: 52px;
+  border-bottom: 1px solid var(--border-main);
+}
+
+.result-row:last-child {
+  border-bottom: 0;
+}
+
+.result-row span:first-child {
+  display: grid;
+  gap: 3px;
+}
+
+.result-row small {
+  overflow-wrap: anywhere;
+  color: var(--text-soft);
+  font-size: 12px;
+}
+
 .panel-header {
   display: flex;
   align-items: flex-start;
@@ -402,7 +705,7 @@ button {
 
 table {
   width: 100%;
-  min-width: 780px;
+  min-width: 980px;
   border-collapse: collapse;
 }
 
@@ -454,6 +757,30 @@ tbody tr:hover {
 .badge.muted {
   background: var(--bg-muted);
   color: var(--text-soft);
+}
+
+.muted-text {
+  color: var(--text-soft);
+  font-size: 12px;
+}
+
+.section-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.section-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  border: 1px solid var(--border-main);
+  border-radius: 999px;
+  padding: 2px 8px;
+  background: var(--bg-muted);
+  color: var(--text-main);
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .review-row {
@@ -541,6 +868,35 @@ tbody tr:hover {
   padding: 16px;
 }
 
+.inspector-sections {
+  display: grid;
+  gap: 12px;
+  padding: 16px 16px 0;
+}
+
+.section-detail {
+  display: grid;
+  gap: 7px;
+  border: 1px solid var(--border-main);
+  border-radius: 8px;
+  padding: 12px;
+  background: var(--bg-muted);
+}
+
+.section-detail span {
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.section-detail p {
+  margin: 0;
+  color: var(--text-main);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
 .detail-block {
   display: grid;
   gap: 4px;
@@ -579,9 +935,18 @@ tbody tr:hover {
 
   .nav,
   .kpi-strip,
+  .role-family-row,
+  .evidence-filters,
+  .load-grid,
   .analysis-grid,
   .analysis-grid.secondary {
     grid-template-columns: 1fr;
+  }
+
+  .role-family-metric,
+  .hiring-company-metric,
+  .filter-summary {
+    justify-items: start;
   }
 
   .page-header-side {

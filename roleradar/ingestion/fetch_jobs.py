@@ -111,6 +111,7 @@ def ingest_jobs(
     country: str = "sg",
     results_per_page: int = 20,
     max_pages: int = 1,
+    role_family_id: str | None = None,
     sqlite_wal: bool = True,
     sqlite_busy_timeout_ms: int = 5000,
     careers_gov_timeout_seconds: float = 20.0,
@@ -164,6 +165,7 @@ def ingest_jobs(
                 "country": country,
                 "results_per_page": results_per_page,
                 "max_pages": max_pages,
+                "role_family_id": role_family_id,
                 "jobstreet_site_key": (
                     jobstreet_site_key if source == "jobstreet" else None
                 ),
@@ -180,6 +182,7 @@ def ingest_jobs(
                 location=location,
                 country=country,
                 results_per_page=results_per_page,
+                role_family_id=role_family_id,
                 adzuna_app_id=adzuna_app_id,
                 adzuna_app_key=adzuna_app_key,
                 adzuna_client=adzuna_client,
@@ -194,7 +197,8 @@ def ingest_jobs(
                 results_per_page=results_per_page,
                 max_pages=max_pages,
                 timeout_seconds=careers_gov_timeout_seconds,
-                throttle_seconds=careers_gov_throttle_seconds,
+            throttle_seconds=careers_gov_throttle_seconds,
+            role_family_id=role_family_id,
                 careers_gov_client=careers_gov_client,
             )
         elif source == "jobstreet":
@@ -207,7 +211,8 @@ def ingest_jobs(
                 location=location,
                 max_pages=max_pages,
                 site_key=jobstreet_site_key,
-                timeout_seconds=jobstreet_timeout_seconds,
+            timeout_seconds=jobstreet_timeout_seconds,
+            role_family_id=role_family_id,
                 jobstreet_client=jobstreet_client,
             )
         else:
@@ -217,7 +222,8 @@ def ingest_jobs(
                 run=run,
                 job_repo=job_repo,
                 handler=handler,
-                targets=targets,
+            targets=targets,
+            role_family_id=role_family_id,
             )
 
         run_status = (
@@ -274,6 +280,7 @@ def _ingest_adzuna(
     location: str | None,
     country: str,
     results_per_page: int,
+    role_family_id: str | None,
     adzuna_app_id: str | None,
     adzuna_app_key: str | None,
     adzuna_client: AdzunaClient | None,
@@ -299,6 +306,7 @@ def _ingest_adzuna(
             normalized_jobs=normalized_jobs,
             run=run,
             job_repo=job_repo,
+            role_family_id=role_family_id,
         )
     )
 
@@ -313,6 +321,7 @@ def _ingest_careers_gov(
     max_pages: int,
     timeout_seconds: float,
     throttle_seconds: float,
+    role_family_id: str | None,
     careers_gov_client: CareersGovClient | None,
 ) -> None:
     try:
@@ -335,6 +344,7 @@ def _ingest_careers_gov(
             normalized_jobs=normalized_jobs,
             run=run,
             job_repo=job_repo,
+            role_family_id=role_family_id,
         )
     )
 
@@ -349,6 +359,7 @@ def _ingest_jobstreet(
     max_pages: int,
     site_key: str,
     timeout_seconds: float,
+    role_family_id: str | None,
     jobstreet_client: JobstreetClient | None,
 ) -> None:
     try:
@@ -371,6 +382,7 @@ def _ingest_jobstreet(
             normalized_jobs=normalized_jobs,
             run=run,
             job_repo=job_repo,
+            role_family_id=role_family_id,
         )
     )
 
@@ -382,6 +394,7 @@ def _ingest_target_boards(
     job_repo: JobRepository,
     handler: SourceHandler | None,
     targets: list[TargetCompany],
+    role_family_id: str | None,
 ) -> None:
     if handler is None:
         raise ValueError("Target-board ingestion requires a source handler")
@@ -404,6 +417,7 @@ def _ingest_target_boards(
                 normalized_jobs=normalized_jobs,
                 run=run,
                 job_repo=job_repo,
+                role_family_id=role_family_id,
             )
         )
 
@@ -413,6 +427,7 @@ def _persist_normalized_jobs(
     normalized_jobs: list[NormalizedJob],
     run: IngestionRun,
     job_repo: JobRepository,
+    role_family_id: str | None,
 ) -> tuple[int, int, int, int, int]:
     jobs_seen = 0
     source_listings_upserted = 0
@@ -420,7 +435,7 @@ def _persist_normalized_jobs(
     job_skills_extracted = 0
     duplicate_candidates = 0
 
-    for normalized_job in normalized_jobs:
+    for normalized_job in _deduplicate_normalized_jobs(normalized_jobs):
         jobs_seen += 1
         company = job_repo.get_or_create_company(name=normalized_job.company_name)
         job = job_repo.get_or_create_job(
@@ -430,6 +445,7 @@ def _persist_normalized_jobs(
             location=normalized_job.location,
             description_text=normalized_job.description_text,
             content_hash=normalized_job.content_hash,
+            role_family_id=role_family_id,
             raw_payload=normalized_job.raw_payload,
         )
         listing = job_repo.upsert_source_listing(
@@ -476,6 +492,18 @@ def _persist_normalized_jobs(
         job_skills_extracted,
         duplicate_candidates,
     )
+
+
+def _deduplicate_normalized_jobs(
+    normalized_jobs: Iterable[NormalizedJob],
+) -> list[NormalizedJob]:
+    """Collapse repeated source identities in one fetched batch before writes."""
+    jobs_by_source_identity: dict[tuple[str, str], NormalizedJob] = {}
+    for normalized_job in normalized_jobs:
+        jobs_by_source_identity[
+            (normalized_job.source, normalized_job.source_job_id)
+        ] = normalized_job
+    return list(jobs_by_source_identity.values())
 
 
 def _fetch_adzuna_jobs(
@@ -581,16 +609,13 @@ def _source_handler(
 
 def _record_duplicate_candidates(job_repo: JobRepository, job) -> int:
     count = 0
-    for candidate_job in job_repo.find_duplicate_candidates(job):
+    for match in job_repo.find_duplicate_candidate_matches(job):
         job_repo.record_duplicate_candidate(
             job=job,
-            candidate_job=candidate_job,
-            match_type="candidate",
-            score=0.9,
-            reason=(
-                "same normalized company, title, location, and matching content hash "
-                "across distinct sources"
-            ),
+            candidate_job=match.candidate_job,
+            match_type=match.match_type,
+            score=match.score,
+            reason=match.reason,
         )
         count += 1
     return count

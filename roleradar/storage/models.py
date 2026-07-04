@@ -79,6 +79,7 @@ class Job(Base):
     company_id: Mapped[int | None] = mapped_column(ForeignKey("companies.id"))
     title: Mapped[str] = mapped_column(String(500))
     normalized_title: Mapped[str] = mapped_column(String(500), index=True)
+    role_family_id: Mapped[str | None] = mapped_column(String(128), index=True)
     canonical_url: Mapped[str | None] = mapped_column(Text, unique=True)
     location: Mapped[str | None] = mapped_column(String(255))
     workplace_type: Mapped[str | None] = mapped_column(String(64))

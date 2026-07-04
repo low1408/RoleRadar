@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 from html import unescape
 from io import StringIO
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, Query
@@ -20,6 +21,17 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload, sessionmaker
 
+from roleradar.analytics.role_intelligence import (
+    canonical_role_family,
+    canonical_role_family_by_id,
+    custom_role_family_id,
+    known_role_family_ids,
+    role_family_catalog,
+    role_family_detail,
+    role_family_for_job,
+    role_family_summaries,
+    top_hiring_companies,
+)
 from roleradar.analytics.salary_trends import (
     salary_coverage,
     salary_coverage_by_source,
@@ -31,6 +43,8 @@ from roleradar.analytics.skill_trends import (
     top_skills,
 )
 from roleradar.config.settings import Settings
+from roleradar.ingestion.fetch_jobs import ingest_jobs
+from roleradar.ingestion.normalize_jobs import extract_job_description_sections
 from roleradar.storage.database import (
     create_database_engine,
     create_session_factory,
@@ -42,6 +56,7 @@ from roleradar.storage.models import (
     IngestionRun,
     Job,
     JobSkill,
+    PostingObservation,
     Skill,
     SourceListing,
 )
@@ -56,6 +71,8 @@ VALID_JOB_SORTS = {
 }
 VALID_ORDERS = {"asc", "desc"}
 VALID_DUPLICATE_ACTIONS = {"merge", "dismiss", "keep_separate"}
+FRONTEND_INGESTION_SOURCES = {"all", "adzuna", "careers_gov", "jobstreet"}
+QUERY_INGESTION_SOURCES = ("careers_gov", "jobstreet", "adzuna")
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -93,33 +110,108 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/v1/analytics/overview")
     def analytics_overview(
         days: int | None = Query(default=30, ge=1, le=366),
+        role_family: str | None = None,
         session: Session = Depends(get_session),
     ) -> dict[str, Any]:
-        coverage = salary_coverage(session, days=days)
-        salary_summaries = salary_range_summaries(session, days=days)
-        skill_rows = top_skills(session, days=days, limit=10)
-        source_coverage = skill_extraction_coverage_by_source(session, days=days)
+        if role_family and not _is_supported_role_family_id(role_family):
+            raise HTTPException(status_code=422, detail="Unsupported role_family")
+
+        role_rows = role_family_summaries(session, days=days, limit=None)
+        selected_role = (
+            next((row for row in role_rows if row.id == role_family), None)
+            if role_family
+            else None
+        )
+        scoped_listings = (
+            _filtered_source_listings(session, role_family=role_family)
+            if role_family
+            else []
+        )
+        coverage = (
+            _salary_coverage_for_listings(
+                selected_role.label if selected_role is not None else role_family,
+                scoped_listings,
+            )
+            if role_family
+            else salary_coverage(session, days=days)
+        )
+        salary_summaries = (
+            [] if role_family else salary_range_summaries(session, days=days)
+        )
+        skill_rows = [] if role_family else top_skills(session, days=days, limit=10)
+        company_rows = top_hiring_companies(
+            session,
+            days=days,
+            family_id=role_family,
+            limit=8,
+        )
+        source_coverage = (
+            _skill_extraction_coverage_for_listings(scoped_listings)
+            if role_family
+            else skill_extraction_coverage_by_source(session, days=days)
+        )
         recent_runs = _recent_ingestion_runs(session, limit=5)
         pending_duplicates = _count_duplicates(session, status="pending")
         total_listings = _count(session, SourceListing)
+        scoped_skill_rows = (
+            [
+                {"skill_name": skill_name, "job_count": job_count}
+                for skill_name, job_count in selected_role.top_skills
+            ]
+            if selected_role is not None
+            else []
+        )
         data = {
             "kpis": {
-                "canonical_jobs": _count(session, Job),
-                "source_listings": total_listings,
-                "companies": _count(session, Company),
-                "skills": _count(session, Skill),
+                "canonical_jobs": (
+                    selected_role.job_count
+                    if selected_role is not None
+                    else _count_active_jobs(session)
+                ),
+                "source_listings": (
+                    selected_role.source_listing_count
+                    if selected_role is not None
+                    else total_listings
+                ),
+                "companies": (
+                    selected_role.company_count
+                    if selected_role is not None
+                    else _count(session, Company)
+                ),
+                "skills": (
+                    len(selected_role.top_skills)
+                    if selected_role is not None
+                    else _count(session, Skill)
+                ),
                 "pending_duplicates": pending_duplicates,
                 "salary_disclosure_rate": coverage.disclosure_rate,
             },
-            "top_skills": [
+            "selected_role_family": (
+                _role_family_payload(selected_role)
+                if selected_role is not None
+                else None
+            ),
+            "top_skills": scoped_skill_rows if role_family else [
                 {"skill_name": row.skill_name, "job_count": row.job_count}
                 for row in skill_rows
+            ],
+            "role_families": [
+                _role_family_payload(row)
+                for row in role_rows
+            ],
+            "top_hiring_companies": [
+                _hiring_company_payload(row)
+                for row in company_rows
             ],
             "salary": {
                 "coverage": _salary_coverage_payload(coverage),
                 "by_source": [
                     _salary_coverage_payload(row)
-                    for row in salary_coverage_by_source(session, days=days)
+                    for row in (
+                        _salary_coverage_by_source_for_listings(scoped_listings)
+                        if role_family
+                        else salary_coverage_by_source(session, days=days)
+                    )
                 ],
                 "summaries": [
                     {
@@ -171,8 +263,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return _wrapped(
             session,
             data,
-            applied_filters={"days": days},
-            sample_size=total_listings,
+            applied_filters={"days": days, "role_family": role_family},
+            sample_size=(
+                selected_role.source_listing_count
+                if selected_role is not None
+                else total_listings
+            ),
             missing_data_counts=_missing_counts(session),
         )
 
@@ -183,6 +279,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         sort_by: str = Query(default="last_seen_at"),
         order: str = Query(default="desc"),
         source: str | None = None,
+        role_family: str | None = None,
         q: str | None = None,
         session: Session = Depends(get_session),
     ) -> dict[str, Any]:
@@ -190,8 +287,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=422, detail="Unsupported sort_by")
         if order not in VALID_ORDERS:
             raise HTTPException(status_code=422, detail="Unsupported order")
+        if role_family and not _is_supported_role_family_id(role_family):
+            raise HTTPException(status_code=422, detail="Unsupported role_family")
 
-        listings = _filtered_source_listings(session, source=source, q=q)
+        listings = _filtered_source_listings(
+            session,
+            source=source,
+            role_family=role_family,
+            q=q,
+        )
         reverse = order == "desc"
         listings = sorted(
             listings,
@@ -210,6 +314,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             data,
             applied_filters={
                 "source": source,
+                "role_family": role_family,
                 "q": q,
                 "limit": limit,
                 "offset": offset,
@@ -223,11 +328,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/v1/jobs/export.csv")
     def export_jobs_csv(
         source: str | None = None,
+        role_family: str | None = None,
         q: str | None = None,
         session: Session = Depends(get_session),
     ) -> Response:
+        if role_family and not _is_supported_role_family_id(role_family):
+            raise HTTPException(status_code=422, detail="Unsupported role_family")
         listings = sorted(
-            _filtered_source_listings(session, source=source, q=q),
+            _filtered_source_listings(
+                session,
+                source=source,
+                role_family=role_family,
+                q=q,
+            ),
             key=lambda listing: listing.last_seen_at,
             reverse=True,
         )
@@ -240,6 +353,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "title",
                 "company_name",
                 "source",
+                "role_family",
                 "source_job_id",
                 "location",
                 "workplace_type",
@@ -249,6 +363,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "salary_currency",
                 "salary_interval",
                 "salary_midpoint",
+                "responsibilities",
+                "required_competencies_and_certifications",
+                "preferred_competencies_and_qualifications",
                 "source_url",
                 "first_seen_at",
                 "last_seen_at",
@@ -335,6 +452,58 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             data,
             applied_filters={"skill_id": skill_id},
             sample_size=len(jobs),
+        )
+
+    @app.get("/api/v1/role-families")
+    def list_role_families(
+        days: int | None = Query(default=30, ge=1, le=366),
+        limit: int = Query(default=20, ge=1, le=100),
+        include_empty: bool = Query(default=False),
+        session: Session = Depends(get_session),
+    ) -> dict[str, Any]:
+        if include_empty:
+            summary_rows = role_family_summaries(session, days=days, limit=None)
+            summary_by_id = {row.id: row for row in summary_rows}
+            catalog_rows = [
+                summary_by_id.get(role.id) or _empty_role_family_summary(role)
+                for role in role_family_catalog()
+            ]
+            catalog_ids = {role.id for role in role_family_catalog()}
+            custom_rows = [row for row in summary_rows if row.id not in catalog_ids]
+            rows = (catalog_rows + custom_rows)[:limit]
+        else:
+            rows = role_family_summaries(session, days=days, limit=limit)
+        data = {
+            "total": len(rows),
+            "items": [_role_family_payload(row) for row in rows],
+        }
+        return _wrapped(
+            session,
+            data,
+            applied_filters={
+                "days": days,
+                "limit": limit,
+                "include_empty": include_empty,
+            },
+            sample_size=len(rows),
+        )
+
+    @app.get("/api/v1/role-families/{family_id}")
+    def get_role_family(
+        family_id: str,
+        days: int | None = Query(default=30, ge=1, le=366),
+        session: Session = Depends(get_session),
+    ) -> dict[str, Any]:
+        if not _is_supported_role_family_id(family_id):
+            raise HTTPException(status_code=404, detail="Role family not found")
+        row = role_family_detail(session, family_id=family_id, days=days)
+        if row is None:
+            raise HTTPException(status_code=404, detail="Role family not found")
+        return _wrapped(
+            session,
+            _role_family_payload(row),
+            applied_filters={"family_id": family_id, "days": days},
+            sample_size=row.job_count,
         )
 
     @app.get("/api/v1/roles/{role_id}")
@@ -428,6 +597,77 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         }
         return _wrapped(session, data, sample_size=len(rows))
 
+    @app.post("/api/v1/admin/ingest")
+    def ingest_from_frontend(payload: dict[str, Any]) -> dict[str, Any]:
+        source = _source_from_frontend_payload(payload.get("source"))
+        query = _non_empty_string(payload.get("query"))
+        role_family_id = _role_family_from_frontend_payload(
+            payload.get("role_family")
+        )
+        location = _non_empty_string(payload.get("location"))
+        country = _non_empty_string(payload.get("country")) or "sg"
+        results_per_page = _bounded_int(
+            payload.get("results_per_page"),
+            default=20,
+            minimum=1,
+            maximum=100,
+            field_name="results_per_page",
+        )
+        max_pages = _bounded_int(
+            payload.get("max_pages"),
+            default=1,
+            minimum=1,
+            maximum=10,
+            field_name="max_pages",
+        )
+
+        if not query:
+            raise HTTPException(status_code=422, detail="query is required")
+
+        sources = QUERY_INGESTION_SOURCES if source == "all" else (source,)
+        results = [
+            _run_frontend_ingestion(
+                settings=settings,
+                source=ingestion_source,
+                query=query,
+                role_family_id=role_family_id,
+                location=location,
+                country=country,
+                results_per_page=results_per_page,
+                max_pages=max_pages,
+            )
+            for ingestion_source in sources
+        ]
+        jobs_seen = sum(result["jobs_seen"] for result in results)
+        source_listings = sum(result["source_listings_upserted"] for result in results)
+        data = {
+            "source": source,
+            "query": query,
+            "role_family": role_family_id,
+            "role_family_label": _role_family_label(role_family_id),
+            "location": location,
+            "results_per_page": results_per_page,
+            "max_pages": max_pages,
+            "jobs_seen": jobs_seen,
+            "source_listings_upserted": source_listings,
+            "results": results,
+        }
+        with session_factory() as read_session:
+            return _wrapped(
+                read_session,
+                data,
+                applied_filters={
+                "source": source,
+                "query": query,
+                "role_family": role_family_id,
+                "location": location,
+                    "country": country,
+                    "results_per_page": results_per_page,
+                    "max_pages": max_pages,
+                },
+                sample_size=source_listings,
+            )
+
     @app.get("/api/v1/admin/duplicates")
     def list_duplicates(
         limit: int = Query(default=20, ge=1, le=100),
@@ -445,6 +685,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "total": _count_duplicates(session, status=status),
             "limit": limit,
             "offset": offset,
+            "source_listing_duplicate_groups": (
+                _count_source_listing_duplicate_groups(session)
+            ),
+            "field_duplicate_listing_groups": (
+                _count_field_equivalent_source_listing_duplicate_groups(session)
+            ),
             "items": [_duplicate_payload(row) for row in rows],
         }
         return _wrapped(
@@ -490,6 +736,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         }
         return _wrapped(session, data, sample_size=1)
 
+    @app.post("/api/v1/admin/source-listings/dedupe")
+    def dedupe_source_listings(
+        session: Session = Depends(get_session),
+    ) -> dict[str, Any]:
+        data = _deduplicate_source_listings(session)
+        data.update(_scan_duplicate_job_candidates(session))
+        session.commit()
+        return _wrapped(
+            session,
+            data,
+            sample_size=(
+                data["source_listings_removed"]
+                + data["duplicate_candidates_created"]
+                + data["duplicate_candidates_refreshed"]
+            ),
+        )
+
     static_dir = Path(__file__).parent / "static"
     if static_dir.exists():
         app.mount(
@@ -534,6 +797,177 @@ def session_scope(session_factory: sessionmaker[Session]) -> Iterable[Session]:
         yield session
 
 
+def _source_from_frontend_payload(value: Any) -> str:
+    source = str(value or "").strip().casefold()
+    if source == "mycareersfuture":
+        source = "careers_gov"
+    if source not in FRONTEND_INGESTION_SOURCES:
+        raise HTTPException(status_code=422, detail="Unsupported source")
+    return source
+
+
+def _non_empty_string(value: Any) -> str | None:
+    text = str(value or "").strip()
+    return text or None
+
+
+def _role_family_from_frontend_payload(value: Any) -> str:
+    role_family_id = _non_empty_string(value)
+    if role_family_id is None:
+        raise HTTPException(status_code=422, detail="role_family required")
+    if canonical_role_family_by_id(role_family_id) is not None:
+        return role_family_id
+
+    custom_label = (
+        role_family_id.removeprefix("custom:")
+        if role_family_id.startswith("custom:")
+        else role_family_id
+    )
+    custom_id = custom_role_family_id(custom_label)
+    if custom_id is None:
+        raise HTTPException(status_code=422, detail="Unsupported role_family")
+    return custom_id
+
+
+def _is_supported_role_family_id(role_family_id: str) -> bool:
+    return (
+        role_family_id in known_role_family_ids()
+        or canonical_role_family_by_id(role_family_id) is not None
+    )
+
+
+def _role_family_label(role_family_id: str | None) -> str | None:
+    role = canonical_role_family_by_id(role_family_id)
+    return role.label if role is not None else None
+
+
+def _bounded_int(
+    value: Any,
+    *,
+    default: int,
+    minimum: int,
+    maximum: int,
+    field_name: str,
+) -> int:
+    if value is None or value == "":
+        return default
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=f"{field_name} must be an integer",
+        ) from exc
+    if parsed < minimum or parsed > maximum:
+        raise HTTPException(
+            status_code=422,
+            detail=f"{field_name} must be between {minimum} and {maximum}",
+        )
+    return parsed
+
+
+def _run_frontend_ingestion(
+    *,
+    settings: Settings,
+    source: str,
+    query: str,
+    role_family_id: str,
+    location: str | None,
+    country: str,
+    results_per_page: int,
+    max_pages: int,
+) -> dict[str, Any]:
+    if source == "adzuna" and not (
+        settings.adzuna_app_id and settings.adzuna_app_key
+    ):
+        return _frontend_ingestion_result(
+            source=source,
+            status="skipped",
+            role_family_id=role_family_id,
+            error_message="Adzuna credentials are not configured.",
+        )
+    if source in {"adzuna", "jobstreet"} and not location:
+        return _frontend_ingestion_result(
+            source=source,
+            status="skipped",
+            role_family_id=role_family_id,
+            error_message=f"{source} ingestion requires a location.",
+        )
+    try:
+        result = ingest_jobs(
+            database_url=settings.database_url,
+            source=source,
+            query=query,
+            role_family_id=role_family_id,
+            location=location,
+            country=country,
+            results_per_page=results_per_page,
+            max_pages=max_pages,
+            adzuna_app_id=settings.adzuna_app_id,
+            adzuna_app_key=settings.adzuna_app_key,
+            careers_gov_timeout_seconds=settings.careers_gov_timeout_seconds,
+            careers_gov_throttle_seconds=settings.careers_gov_throttle_seconds,
+            jobstreet_site_key=settings.jobstreet_site_key,
+            jobstreet_timeout_seconds=settings.jobstreet_timeout_seconds,
+            sqlite_wal=settings.sqlite_wal,
+            sqlite_busy_timeout_ms=settings.sqlite_busy_timeout_ms,
+        )
+    except ValueError as exc:
+        return _frontend_ingestion_result(
+            source=source,
+            status="skipped",
+            role_family_id=role_family_id,
+            error_message=str(exc),
+        )
+
+    status = "completed_with_errors" if result.error_message else "completed"
+    return _frontend_ingestion_result(
+        source=source,
+        status=status,
+        role_family_id=role_family_id,
+        targets_seen=result.targets_seen,
+        targets_ingested=result.targets_ingested,
+        targets_failed=result.targets_failed,
+        jobs_seen=result.jobs_seen,
+        source_listings_upserted=result.source_listings_upserted,
+        observations_created=result.observations_created,
+        job_skills_extracted=result.job_skills_extracted,
+        duplicate_candidates=result.duplicate_candidates,
+        error_message=result.error_message,
+    )
+
+
+def _frontend_ingestion_result(
+    *,
+    source: str,
+    status: str,
+    role_family_id: str | None = None,
+    targets_seen: int = 0,
+    targets_ingested: int = 0,
+    targets_failed: int = 0,
+    jobs_seen: int = 0,
+    source_listings_upserted: int = 0,
+    observations_created: int = 0,
+    job_skills_extracted: int = 0,
+    duplicate_candidates: int = 0,
+    error_message: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "source": source,
+        "status": status,
+        "role_family": role_family_id,
+        "targets_seen": targets_seen,
+        "targets_ingested": targets_ingested,
+        "targets_failed": targets_failed,
+        "jobs_seen": jobs_seen,
+        "source_listings_upserted": source_listings_upserted,
+        "observations_created": observations_created,
+        "job_skills_extracted": job_skills_extracted,
+        "duplicate_candidates": duplicate_candidates,
+        "error_message": error_message,
+    }
+
+
 def _wrapped(
     session: Session,
     data: Any,
@@ -555,10 +989,316 @@ def _wrapped(
     }
 
 
+def _count_source_listing_duplicate_groups(session: Session) -> int:
+    rows = session.execute(
+        select(SourceListing.source, SourceListing.source_job_id)
+        .group_by(SourceListing.source, SourceListing.source_job_id)
+        .having(func.count(SourceListing.id) > 1)
+    ).all()
+    return len(rows)
+
+
+def _count_field_equivalent_source_listing_duplicate_groups(session: Session) -> int:
+    return len(
+        [
+            listings
+            for listings in _field_equivalent_source_listing_groups(session).values()
+            if len(listings) > 1
+        ]
+    )
+
+
+def _deduplicate_source_listings(session: Session) -> dict[str, Any]:
+    duplicate_groups_before = _count_source_listing_duplicate_groups(session)
+    field_duplicate_groups_before = (
+        _count_field_equivalent_source_listing_duplicate_groups(session)
+    )
+    groups: dict[tuple[str, str], list[SourceListing]] = {}
+    listings = session.scalars(
+        select(SourceListing).order_by(
+            SourceListing.source.asc(),
+            SourceListing.source_job_id.asc(),
+            SourceListing.last_seen_at.desc(),
+            SourceListing.id.desc(),
+        )
+    ).all()
+    for listing in listings:
+        groups.setdefault((listing.source, listing.source_job_id), []).append(listing)
+
+    groups_merged = 0
+    field_groups_merged = 0
+    source_listings_removed = 0
+    observations_moved = 0
+    redundant_jobs_closed = 0
+
+    for duplicate_listings in groups.values():
+        if len(duplicate_listings) < 2:
+            continue
+        groups_merged += 1
+        group_result = _merge_source_listing_duplicate_group(
+            session,
+            duplicate_listings,
+        )
+        source_listings_removed += group_result["source_listings_removed"]
+        observations_moved += group_result["observations_moved"]
+        redundant_jobs_closed += group_result["redundant_jobs_closed"]
+
+    session.flush()
+
+    for duplicate_listings in _field_equivalent_source_listing_groups(
+        session
+    ).values():
+        if len(duplicate_listings) < 2:
+            continue
+        group_result = _merge_source_listing_duplicate_group(
+            session,
+            duplicate_listings,
+        )
+        if group_result["source_listings_removed"]:
+            field_groups_merged += 1
+        source_listings_removed += group_result["source_listings_removed"]
+        observations_moved += group_result["observations_moved"]
+        redundant_jobs_closed += group_result["redundant_jobs_closed"]
+
+    session.flush()
+    return {
+        "duplicate_groups_before": duplicate_groups_before,
+        "duplicate_groups_after": _count_source_listing_duplicate_groups(session),
+        "field_duplicate_groups_before": field_duplicate_groups_before,
+        "field_duplicate_groups_after": (
+            _count_field_equivalent_source_listing_duplicate_groups(session)
+        ),
+        "groups_merged": groups_merged,
+        "field_groups_merged": field_groups_merged,
+        "source_listings_removed": source_listings_removed,
+        "observations_moved": observations_moved,
+        "redundant_jobs_closed": redundant_jobs_closed,
+    }
+
+
+def _merge_source_listing_duplicate_group(
+    session: Session,
+    duplicate_listings: list[SourceListing],
+) -> dict[str, int]:
+    keeper = duplicate_listings[0]
+    redundant_listings = duplicate_listings[1:]
+    redundant_listing_ids = {
+        listing.id for listing in redundant_listings if listing.id is not None
+    }
+    affected_jobs = {
+        listing.job for listing in redundant_listings if listing.job is not None
+    }
+    source_listings_removed = 0
+    observations_moved = 0
+    redundant_jobs_closed = 0
+
+    for redundant in redundant_listings:
+        if redundant.first_seen_at and (
+            keeper.first_seen_at is None
+            or redundant.first_seen_at < keeper.first_seen_at
+        ):
+            keeper.first_seen_at = redundant.first_seen_at
+        if redundant.last_seen_at and (
+            keeper.last_seen_at is None
+            or redundant.last_seen_at > keeper.last_seen_at
+        ):
+            keeper.last_seen_at = redundant.last_seen_at
+        if keeper.job is not None and redundant.job is not None:
+            _preserve_job_seen_window(keeper.job, redundant.job)
+
+        observations = session.scalars(
+            select(PostingObservation).where(
+                PostingObservation.source_listing_id == redundant.id
+            )
+        ).all()
+        for observation in observations:
+            observation.source_listing = keeper
+            observations_moved += 1
+
+        session.delete(redundant)
+        source_listings_removed += 1
+
+    now = datetime.now(UTC)
+    keeper_job_id = keeper.job.id if keeper.job is not None else None
+    for job in affected_jobs:
+        if job is None or job.id is None or job.id == keeper_job_id:
+            continue
+        remaining_listings = [
+            listing
+            for listing in job.source_listings
+            if listing.id not in redundant_listing_ids
+        ]
+        if not remaining_listings and job.closed_at is None:
+            job.closed_at = now
+            redundant_jobs_closed += 1
+
+    return {
+        "source_listings_removed": source_listings_removed,
+        "observations_moved": observations_moved,
+        "redundant_jobs_closed": redundant_jobs_closed,
+    }
+
+
+def _preserve_job_seen_window(keeper: Job, redundant: Job) -> None:
+    if redundant.first_seen_at and (
+        keeper.first_seen_at is None or redundant.first_seen_at < keeper.first_seen_at
+    ):
+        keeper.first_seen_at = redundant.first_seen_at
+    if redundant.last_seen_at and (
+        keeper.last_seen_at is None or redundant.last_seen_at > keeper.last_seen_at
+    ):
+        keeper.last_seen_at = redundant.last_seen_at
+
+
+def _field_equivalent_source_listing_groups(
+    session: Session,
+) -> dict[tuple[Any, ...], list[SourceListing]]:
+    groups: dict[tuple[Any, ...], list[SourceListing]] = {}
+    listings = session.scalars(
+        select(SourceListing)
+        .options(joinedload(SourceListing.job).joinedload(Job.company))
+        .order_by(
+            SourceListing.source.asc(),
+            SourceListing.last_seen_at.desc(),
+            SourceListing.id.desc(),
+        )
+    ).unique().all()
+    for listing in listings:
+        key = _field_equivalent_source_listing_key(listing)
+        if key is None:
+            continue
+        groups.setdefault(key, []).append(listing)
+    return groups
+
+
+def _field_equivalent_source_listing_key(
+    listing: SourceListing,
+) -> tuple[Any, ...] | None:
+    job = listing.job
+    company_name = listing.source_company_name
+    if not company_name and job is not None and job.company is not None:
+        company_name = job.company.name
+    title = listing.source_title or (job.title if job is not None else None)
+    location = listing.location or (job.location if job is not None else None)
+    company_key = normalize_text(company_name or "")
+    title_key = normalize_text(title or "")
+    location_key = normalize_text(location or "")
+    if not listing.source or not company_key or not title_key:
+        return None
+
+    content_signal = _field_duplicate_content_signal(listing)
+    if content_signal is None:
+        return None
+
+    return (
+        listing.source,
+        company_key,
+        title_key,
+        location_key,
+        _salary_duplicate_key(listing),
+        content_signal,
+    )
+
+
+def _field_duplicate_content_signal(listing: SourceListing) -> tuple[str, Any] | None:
+    if listing.content_hash:
+        return ("content_hash", listing.content_hash)
+
+    sections = _structured_sections_for_listing(listing)
+    section_values = tuple(
+        normalize_text(sections.get(field_name, ""))
+        for field_name in (
+            "responsibilities",
+            "required_competencies_and_certifications",
+            "preferred_competencies_and_qualifications",
+        )
+    )
+    substantive_sections = [
+        value for value in section_values if len(value) >= 20
+    ]
+    if len(substantive_sections) >= 2:
+        return ("structured_sections", section_values)
+    return None
+
+
+def _salary_duplicate_key(listing: SourceListing) -> tuple[Any, ...]:
+    return (
+        _rounded_salary_value(listing.salary_min),
+        _rounded_salary_value(listing.salary_max),
+        normalize_text(listing.salary_currency or ""),
+        normalize_text(listing.salary_interval or ""),
+    )
+
+
+def _rounded_salary_value(value: float | None) -> float | None:
+    return round(float(value), 2) if value is not None else None
+
+
+def _scan_duplicate_job_candidates(session: Session) -> dict[str, Any]:
+    repo = JobRepository(session)
+    active_jobs = list(
+        session.scalars(
+            select(Job)
+            .where(Job.closed_at.is_(None))
+            .order_by(Job.id.asc())
+        ).all()
+    )
+    seen_pairs: set[tuple[int, int]] = set()
+    candidates_created = 0
+    candidates_refreshed = 0
+
+    for job in active_jobs:
+        if job.id is None:
+            continue
+        for match in repo.find_duplicate_candidate_matches(job):
+            candidate_job = match.candidate_job
+            if candidate_job.id is None:
+                continue
+            first_job, second_job = sorted(
+                [job, candidate_job],
+                key=lambda item: item.id,
+            )
+            pair = (first_job.id, second_job.id)
+            if pair in seen_pairs:
+                continue
+            seen_pairs.add(pair)
+
+            existing = session.scalar(
+                select(DuplicateJobCandidate).where(
+                    DuplicateJobCandidate.job_id == first_job.id,
+                    DuplicateJobCandidate.candidate_job_id == second_job.id,
+                )
+            )
+            repo.record_duplicate_candidate(
+                job=job,
+                candidate_job=candidate_job,
+                match_type=match.match_type,
+                score=match.score,
+                reason=match.reason,
+            )
+            if existing is None:
+                candidates_created += 1
+            else:
+                candidates_refreshed += 1
+
+    session.flush()
+    return {
+        "jobs_scanned": len(active_jobs),
+        "duplicate_candidate_pairs_found": len(seen_pairs),
+        "duplicate_candidates_created": candidates_created,
+        "duplicate_candidates_refreshed": candidates_refreshed,
+        "pending_duplicate_candidates_after": _count_duplicates(
+            session,
+            status="pending",
+        ),
+    }
+
+
 def _filtered_source_listings(
     session: Session,
     *,
     source: str | None = None,
+    role_family: str | None = None,
     q: str | None = None,
 ) -> list[SourceListing]:
     query = select(SourceListing).options(
@@ -567,6 +1307,12 @@ def _filtered_source_listings(
     if source:
         query = query.where(SourceListing.source == source)
     listings = list(session.scalars(query).unique().all())
+    if role_family:
+        listings = [
+            listing
+            for listing in listings
+            if _role_family_for_listing(listing)["id"] == role_family
+        ]
     if q:
         needle = normalize_text(q)
         listings = [
@@ -585,6 +1331,8 @@ def _filtered_source_listings(
 def _source_listing_payload(listing: SourceListing) -> dict[str, Any]:
     job = listing.job
     company = job.company if job is not None else None
+    structured_sections = _structured_sections_for_listing(listing)
+    role_family = _role_family_for_listing(listing)
     return {
         "source_listing_id": listing.id,
         "job_id": job.id if job is not None else None,
@@ -593,6 +1341,7 @@ def _source_listing_payload(listing: SourceListing) -> dict[str, Any]:
             company.name if company is not None else listing.source_company_name
         ),
         "source": listing.source,
+        "role_family": role_family,
         "source_job_id": listing.source_job_id,
         "location": listing.location or (job.location if job is not None else None),
         "workplace_type": listing.workplace_type,
@@ -602,6 +1351,13 @@ def _source_listing_payload(listing: SourceListing) -> dict[str, Any]:
         "salary_currency": listing.salary_currency,
         "salary_interval": listing.salary_interval,
         "salary_midpoint": _salary_midpoint(listing),
+        "responsibilities": structured_sections.get("responsibilities"),
+        "required_competencies_and_certifications": structured_sections.get(
+            "required_competencies_and_certifications"
+        ),
+        "preferred_competencies_and_qualifications": structured_sections.get(
+            "preferred_competencies_and_qualifications"
+        ),
         "source_url": listing.source_url or listing.canonical_url,
         "first_seen_at": _iso(listing.first_seen_at),
         "last_seen_at": _iso(listing.last_seen_at),
@@ -609,9 +1365,17 @@ def _source_listing_payload(listing: SourceListing) -> dict[str, Any]:
 
 
 def _job_detail_payload(job: Job) -> dict[str, Any]:
+    structured_sections = extract_job_description_sections(job.description_text)
     return {
         **_job_summary_payload(job),
         "description_text": _sanitize_text(job.description_text),
+        "responsibilities": structured_sections.get("responsibilities"),
+        "required_competencies_and_certifications": structured_sections.get(
+            "required_competencies_and_certifications"
+        ),
+        "preferred_competencies_and_qualifications": structured_sections.get(
+            "preferred_competencies_and_qualifications"
+        ),
         "skills": [
             {
                 "id": job_skill.skill.id,
@@ -629,9 +1393,16 @@ def _job_detail_payload(job: Job) -> dict[str, Any]:
 
 
 def _job_summary_payload(job: Job) -> dict[str, Any]:
+    role = role_family_for_job(job)
     return {
         "id": job.id,
         "title": job.title,
+        "role_family": {
+            "id": role.id,
+            "label": role.label,
+            "confidence": role.confidence,
+            "matched_phrase": role.matched_phrase,
+        },
         "company": {
             "id": job.company.id,
             "name": job.company.name,
@@ -679,6 +1450,122 @@ def _salary_coverage_payload(row: Any) -> dict[str, Any]:
     }
 
 
+def _salary_coverage_for_listings(
+    group: str | None,
+    listings: list[SourceListing],
+) -> Any:
+    salary_count = sum(1 for listing in listings if _has_salary(listing))
+    total_count = len(listings)
+    return SimpleNamespace(
+        group=group or "selected role family",
+        total_posting_count=total_count,
+        salary_posting_count=salary_count,
+        disclosure_rate=salary_count / total_count if total_count else 0.0,
+    )
+
+
+def _salary_coverage_by_source_for_listings(
+    listings: list[SourceListing],
+) -> list[Any]:
+    grouped: dict[str, list[SourceListing]] = {}
+    for listing in listings:
+        grouped.setdefault(listing.source, []).append(listing)
+    return [
+        _salary_coverage_for_listings(source, source_listings)
+        for source, source_listings in sorted(grouped.items())
+    ]
+
+
+def _skill_extraction_coverage_for_listings(
+    listings: list[SourceListing],
+) -> list[dict[str, Any]]:
+    grouped: dict[str, list[SourceListing]] = {}
+    for listing in listings:
+        grouped.setdefault(listing.source, []).append(listing)
+    rows = []
+    for source, source_listings in sorted(grouped.items()):
+        total_count = len(source_listings)
+        full_text_count = sum(
+            1 for listing in source_listings if listing.text_quality == "full_text"
+        )
+        snippet_count = sum(
+            1 for listing in source_listings if listing.text_quality == "snippet"
+        )
+        extracted_count = sum(
+            1
+            for listing in source_listings
+            if listing.job is not None and bool(listing.job.job_skills)
+        )
+        rows.append(
+            SimpleNamespace(
+                source=source,
+                total_posting_count=total_count,
+                full_text_posting_count=full_text_count,
+                snippet_posting_count=snippet_count,
+                extracted_posting_count=extracted_count,
+                full_text_rate=full_text_count / total_count if total_count else 0.0,
+            )
+        )
+    return rows
+
+
+def _has_salary(listing: SourceListing) -> bool:
+    return listing.salary_min is not None or listing.salary_max is not None
+
+
+def _role_family_payload(row: Any) -> dict[str, Any]:
+    return {
+        "id": row.id,
+        "label": row.label,
+        "job_count": row.job_count,
+        "source_listing_count": row.source_listing_count,
+        "company_count": row.company_count,
+        "salary_listing_count": row.salary_listing_count,
+        "average_annualized_salary": row.average_annualized_salary,
+        "top_sources": [
+            {"source": source, "posting_count": posting_count}
+            for source, posting_count in row.top_sources
+        ],
+        "top_skills": [
+            {"skill_name": skill_name, "job_count": job_count}
+            for skill_name, job_count in row.top_skills
+        ],
+        "example_titles": list(row.example_titles),
+    }
+
+
+def _empty_role_family_summary(role: Any) -> Any:
+    return SimpleNamespace(
+        id=role.id,
+        label=role.label,
+        job_count=0,
+        source_listing_count=0,
+        company_count=0,
+        salary_listing_count=0,
+        average_annualized_salary=None,
+        top_sources=(),
+        top_skills=(),
+        example_titles=(),
+    )
+
+
+def _hiring_company_payload(row: Any) -> dict[str, Any]:
+    return {
+        "company_name": row.company_name,
+        "job_count": row.job_count,
+        "source_listing_count": row.source_listing_count,
+        "latest_seen_at": _iso(row.latest_seen_at),
+        "top_role_families": [
+            {"role_family": role_family, "job_count": job_count}
+            for role_family, job_count in row.top_role_families
+        ],
+        "top_sources": [
+            {"source": source, "posting_count": posting_count}
+            for source, posting_count in row.top_sources
+        ],
+    }
+
+
 def _recent_ingestion_runs(session: Session, *, limit: int) -> list[dict[str, Any]]:
     rows = session.scalars(
         select(IngestionRun)
@@ -714,6 +1601,31 @@ def _salary_midpoint(listing: SourceListing) -> float | None:
     return (listing.salary_min + listing.salary_max) / 2
 
 
+def _structured_sections_for_listing(listing: SourceListing) -> dict[str, str]:
+    raw_payload = listing.raw_payload if isinstance(listing.raw_payload, dict) else {}
+    raw_sections = raw_payload.get("structured_sections")
+    if isinstance(raw_sections, dict):
+        return {
+            str(key): str(value)
+            for key, value in raw_sections.items()
+            if value is not None
+        }
+    return extract_job_description_sections(listing.description_text)
+
+
+def _role_family_for_listing(listing: SourceListing) -> dict[str, Any]:
+    if listing.job is not None:
+        role = role_family_for_job(listing.job)
+    else:
+        role = canonical_role_family(listing.source_title)
+    return {
+        "id": role.id,
+        "label": role.label,
+        "confidence": role.confidence,
+        "matched_phrase": role.matched_phrase,
+    }
+
+
 def _missing_counts(session: Session) -> dict[str, int]:
     listings = list(session.scalars(select(SourceListing)).all())
     return {
@@ -732,6 +1644,11 @@ def _missing_counts(session: Session) -> dict[str, int]:
 
 def _count(session: Session, model: type[Any]) -> int:
     return int(session.scalar(select(func.count()).select_from(model)) or 0)
+
+
+def _count_active_jobs(session: Session) -> int:
+    query = select(func.count()).select_from(Job).where(Job.closed_at.is_(None))
+    return int(session.scalar(query) or 0)
 
 
 def _count_duplicates(session: Session, *, status: str | None = None) -> int:

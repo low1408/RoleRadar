@@ -70,6 +70,7 @@ def init_database(
     Base.metadata.create_all(engine)
     _ensure_sqlite_skill_metadata_columns(engine)
     _ensure_sqlite_source_listing_quality_columns(engine)
+    _ensure_sqlite_job_role_family_columns(engine)
 
 
 def _ensure_sqlite_skill_metadata_columns(engine: Engine) -> None:
@@ -116,6 +117,28 @@ def _ensure_sqlite_source_listing_quality_columns(engine: Engine) -> None:
             "ALTER TABLE source_listings "
             "ADD COLUMN text_quality VARCHAR(32) DEFAULT 'full_text'"
         )
+
+    if not statements:
+        return
+
+    with engine.begin() as connection:
+        for statement in statements:
+            connection.execute(text(statement))
+
+
+def _ensure_sqlite_job_role_family_columns(engine: Engine) -> None:
+    """Add user-defined role-family columns to existing local SQLite databases."""
+    if engine.dialect.name != "sqlite":
+        return
+
+    inspector = inspect(engine)
+    if "jobs" not in inspector.get_table_names():
+        return
+
+    existing_columns = {column["name"] for column in inspector.get_columns("jobs")}
+    statements = []
+    if "role_family_id" not in existing_columns:
+        statements.append("ALTER TABLE jobs ADD COLUMN role_family_id VARCHAR(128)")
 
     if not statements:
         return

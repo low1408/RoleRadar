@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from roleradar.ingestion.normalize_jobs import extract_job_description_sections
 from roleradar.storage.models import (
     Company,
     DuplicateAuditLog,
@@ -21,6 +23,23 @@ from roleradar.storage.models import (
     SkillAlias,
     SourceListing,
 )
+
+STRUCTURED_DUPLICATE_FIELDS = {
+    "responsibilities": "responsibilities",
+    "required_competencies_and_certifications": "required competencies",
+    "preferred_competencies_and_qualifications": "preferred qualifications",
+}
+MIN_STRUCTURED_SIGNAL_LENGTH = 20
+
+
+@dataclass(frozen=True)
+class DuplicateCandidateMatch:
+    """Evidence for one reviewable duplicate candidate."""
+
+    candidate_job: Job
+    match_type: str
+    score: float
+    reason: str
 
 
 def normalize_text(value: str) -> str:
@@ -83,6 +102,7 @@ class JobRepository:
         location: str | None = None,
         description_text: str | None = None,
         content_hash: str | None = None,
+        role_family_id: str | None = None,
         raw_payload: dict[str, Any] | None = None,
     ) -> Job:
         if canonical_url:
@@ -93,12 +113,14 @@ class JobRepository:
                 job.last_seen_at = datetime.now(UTC)
                 job.description_text = description_text or job.description_text
                 job.content_hash = content_hash or job.content_hash
+                job.role_family_id = role_family_id or job.role_family_id
                 job.raw_payload = raw_payload or job.raw_payload
                 return job
 
         job = Job(
             title=title.strip(),
             normalized_title=normalize_text(title),
+            role_family_id=role_family_id,
             company=company,
             canonical_url=canonical_url,
             location=location,
@@ -192,13 +214,17 @@ class JobRepository:
         self.session.flush()
         return observation
 
-    def find_duplicate_candidates(self, job: Job) -> list[Job]:
+    def find_duplicate_candidate_matches(
+        self,
+        job: Job,
+    ) -> list[DuplicateCandidateMatch]:
         """Find conservative cross-source duplicate candidates for one job."""
-        if job.id is None or job.company is None:
+        if job.id is None or job.company is None or job.closed_at is not None:
             return []
 
         filters = [
             Job.id != job.id,
+            Job.closed_at.is_(None),
             Job.company_id == job.company_id,
             Job.normalized_title == job.normalized_title,
         ]
@@ -209,11 +235,27 @@ class JobRepository:
             filters.append(Job.canonical_url != job.canonical_url)
 
         candidates = self.session.scalars(select(Job).where(*filters)).all()
+        matches: list[DuplicateCandidateMatch] = []
+        for candidate in candidates:
+            if not _jobs_have_distinct_sources(job, candidate):
+                continue
+            match = _duplicate_match_evidence(job, candidate)
+            if match is None:
+                continue
+            matches.append(
+                DuplicateCandidateMatch(
+                    candidate_job=candidate,
+                    match_type=match.match_type,
+                    score=match.score,
+                    reason=match.reason,
+                )
+            )
+        return matches
+
+    def find_duplicate_candidates(self, job: Job) -> list[Job]:
+        """Find conservative cross-source duplicate candidate jobs."""
         return [
-            candidate
-            for candidate in candidates
-            if _jobs_have_distinct_sources(job, candidate)
-            and _jobs_have_strong_signal(job, candidate)
+            match.candidate_job for match in self.find_duplicate_candidate_matches(job)
         ]
 
     def record_duplicate_candidate(
@@ -291,7 +333,13 @@ class JobRepository:
             raise ValueError(f"unsupported duplicate resolution action: {action}")
 
         previous_status = duplicate_candidate.status
+        merge_payload: dict[str, Any] | None = None
+        if action == "merge":
+            merge_payload = self._merge_duplicate_jobs(duplicate_candidate)
         duplicate_candidate.status = status_by_action[action]
+        audit_payload = {**(payload or {})}
+        if merge_payload is not None:
+            audit_payload["merge"] = merge_payload
         audit_log = DuplicateAuditLog(
             duplicate_candidate=duplicate_candidate,
             action=action,
@@ -299,11 +347,77 @@ class JobRepository:
             reason=reason,
             previous_status=previous_status,
             new_status=duplicate_candidate.status,
-            payload=payload,
+            payload=audit_payload or None,
         )
         self.session.add(audit_log)
         self.session.flush()
         return audit_log
+
+    def _merge_duplicate_jobs(
+        self,
+        duplicate_candidate: DuplicateJobCandidate,
+    ) -> dict[str, Any]:
+        keeper = duplicate_candidate.job
+        redundant = duplicate_candidate.candidate_job
+        moved_source_listing_ids: list[int] = []
+        moved_job_skill_ids: list[int] = []
+        removed_job_skill_ids: list[int] = []
+
+        for listing in list(redundant.source_listings):
+            listing.job = keeper
+            if listing.id is not None:
+                moved_source_listing_ids.append(listing.id)
+
+        for job_skill in list(redundant.job_skills):
+            existing = self.session.scalar(
+                select(JobSkill).where(
+                    JobSkill.job_id == keeper.id,
+                    JobSkill.skill_id == job_skill.skill_id,
+                    JobSkill.extraction_method == job_skill.extraction_method,
+                )
+            )
+            if existing is not None:
+                existing.confidence = max(existing.confidence, job_skill.confidence)
+                existing.matched_text = job_skill.matched_text or existing.matched_text
+                if job_skill.id is not None:
+                    removed_job_skill_ids.append(job_skill.id)
+                self.session.delete(job_skill)
+                continue
+
+            job_skill.job = keeper
+            if job_skill.id is not None:
+                moved_job_skill_ids.append(job_skill.id)
+
+        if keeper.description_text is None and redundant.description_text:
+            keeper.description_text = redundant.description_text
+        if keeper.content_hash is None and redundant.content_hash:
+            keeper.content_hash = redundant.content_hash
+        if keeper.role_family_id is None and redundant.role_family_id:
+            keeper.role_family_id = redundant.role_family_id
+        if keeper.raw_payload is None and redundant.raw_payload:
+            keeper.raw_payload = redundant.raw_payload
+        if keeper.location is None and redundant.location:
+            keeper.location = redundant.location
+        if redundant.first_seen_at and (
+            keeper.first_seen_at is None
+            or redundant.first_seen_at < keeper.first_seen_at
+        ):
+            keeper.first_seen_at = redundant.first_seen_at
+        if redundant.last_seen_at and (
+            keeper.last_seen_at is None
+            or redundant.last_seen_at > keeper.last_seen_at
+        ):
+            keeper.last_seen_at = redundant.last_seen_at
+
+        redundant.closed_at = datetime.now(UTC)
+        self.session.flush()
+        return {
+            "keeper_job_id": keeper.id,
+            "redundant_job_id": redundant.id,
+            "moved_source_listing_ids": moved_source_listing_ids,
+            "moved_job_skill_ids": moved_job_skill_ids,
+            "removed_job_skill_ids": removed_job_skill_ids,
+        }
 
 
 class SkillRepository:
@@ -412,7 +526,178 @@ def _jobs_have_distinct_sources(first: Job, second: Job) -> bool:
     return bool(first_sources and second_sources and first_sources != second_sources)
 
 
-def _jobs_have_strong_signal(first: Job, second: Job) -> bool:
+def _duplicate_match_evidence(
+    first: Job,
+    second: Job,
+) -> DuplicateCandidateMatch | None:
     if first.canonical_url and first.canonical_url == second.canonical_url:
-        return True
-    return bool(first.content_hash and first.content_hash == second.content_hash)
+        return DuplicateCandidateMatch(
+            candidate_job=second,
+            match_type="canonical_url",
+            score=1.0,
+            reason="same canonical job URL across distinct sources",
+        )
+    if first.content_hash and first.content_hash == second.content_hash:
+        return DuplicateCandidateMatch(
+            candidate_job=second,
+            match_type="content_hash",
+            score=0.95,
+            reason="same normalized company, title, location, and content hash",
+        )
+
+    listing_matches = [
+        listing_match
+        for first_listing in first.source_listings
+        for second_listing in second.source_listings
+        if first_listing.source != second_listing.source
+        for listing_match in [
+            _source_listing_match_evidence(first_listing, second_listing)
+        ]
+        if listing_match is not None
+    ]
+    if not listing_matches:
+        return None
+    return max(listing_matches, key=lambda match: match.score)
+
+
+def _source_listing_match_evidence(
+    first: SourceListing,
+    second: SourceListing,
+) -> DuplicateCandidateMatch | None:
+    if second.job is None:
+        return None
+
+    signals: list[str] = []
+    structured_matches = _matching_structured_fields(first, second)
+    salary_matches = _salary_matches(first, second)
+    workplace_matches = _non_empty_text_matches(
+        first.workplace_type,
+        second.workplace_type,
+    )
+    description_matches = _non_empty_text_matches(
+        first.description_text,
+        second.description_text,
+    )
+
+    for field_name in structured_matches:
+        signals.append(f"matching {STRUCTURED_DUPLICATE_FIELDS[field_name]}")
+    if salary_matches:
+        signals.append("matching salary range")
+    if workplace_matches:
+        signals.append("matching workplace type")
+    if description_matches:
+        signals.append("matching normalized description")
+
+    if len(structured_matches) >= 3:
+        return DuplicateCandidateMatch(
+            candidate_job=second.job,
+            match_type="structured_fields",
+            score=0.95,
+            reason=_duplicate_reason(signals),
+        )
+    if len(structured_matches) >= 2:
+        return DuplicateCandidateMatch(
+            candidate_job=second.job,
+            match_type="structured_fields",
+            score=0.9 if salary_matches else 0.88,
+            reason=_duplicate_reason(signals),
+        )
+    if len(structured_matches) == 1 and salary_matches:
+        return DuplicateCandidateMatch(
+            candidate_job=second.job,
+            match_type="structured_fields_salary",
+            score=0.86,
+            reason=_duplicate_reason(signals),
+        )
+    if description_matches and salary_matches:
+        return DuplicateCandidateMatch(
+            candidate_job=second.job,
+            match_type="description_salary",
+            score=0.86,
+            reason=_duplicate_reason(signals),
+        )
+    if description_matches and workplace_matches:
+        return DuplicateCandidateMatch(
+            candidate_job=second.job,
+            match_type="description_workplace",
+            score=0.84,
+            reason=_duplicate_reason(signals),
+        )
+    return None
+
+
+def _duplicate_reason(signals: list[str]) -> str:
+    return (
+        "same normalized company, title, location, and "
+        f"{'; '.join(signals)} across distinct sources"
+    )
+
+
+def _matching_structured_fields(
+    first: SourceListing,
+    second: SourceListing,
+) -> list[str]:
+    first_sections = _structured_sections_for_listing(first)
+    second_sections = _structured_sections_for_listing(second)
+    matches: list[str] = []
+    for field_name in STRUCTURED_DUPLICATE_FIELDS:
+        first_value = _substantive_normalized_text(first_sections.get(field_name))
+        second_value = _substantive_normalized_text(second_sections.get(field_name))
+        if first_value and first_value == second_value:
+            matches.append(field_name)
+    return matches
+
+
+def _structured_sections_for_listing(listing: SourceListing) -> dict[str, str]:
+    raw_payload = listing.raw_payload if isinstance(listing.raw_payload, dict) else {}
+    raw_sections = raw_payload.get("structured_sections")
+    if isinstance(raw_sections, dict):
+        return {
+            str(key): str(value)
+            for key, value in raw_sections.items()
+            if value is not None
+        }
+    return extract_job_description_sections(listing.description_text)
+
+
+def _salary_matches(first: SourceListing, second: SourceListing) -> bool:
+    if first.salary_min is None and first.salary_max is None:
+        return False
+    if second.salary_min is None and second.salary_max is None:
+        return False
+    if not _nullable_float_matches(first.salary_min, second.salary_min):
+        return False
+    if not _nullable_float_matches(first.salary_max, second.salary_max):
+        return False
+    if first.salary_currency and second.salary_currency:
+        if normalize_text(first.salary_currency) != normalize_text(
+            second.salary_currency
+        ):
+            return False
+    if first.salary_interval and second.salary_interval:
+        if normalize_text(first.salary_interval) != normalize_text(
+            second.salary_interval
+        ):
+            return False
+    return True
+
+
+def _nullable_float_matches(first: float | None, second: float | None) -> bool:
+    if first is None or second is None:
+        return first is second
+    return round(float(first), 2) == round(float(second), 2)
+
+
+def _non_empty_text_matches(first: str | None, second: str | None) -> bool:
+    first_value = _substantive_normalized_text(first)
+    second_value = _substantive_normalized_text(second)
+    return bool(first_value and first_value == second_value)
+
+
+def _substantive_normalized_text(value: str | None) -> str | None:
+    if not value:
+        return None
+    normalized = normalize_text(value)
+    if len(normalized) < MIN_STRUCTURED_SIGNAL_LENGTH:
+        return None
+    return normalized

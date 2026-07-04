@@ -34,6 +34,70 @@ class NormalizedJob:
     source_updated_at: datetime | None = None
 
 
+SECTION_HEADINGS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "responsibilities",
+        (
+            "responsibilities",
+            "job responsibilities",
+            "key responsibilities",
+            "what you will be working on",
+        ),
+    ),
+    (
+        "required_competencies_and_certifications",
+        (
+            "required competencies and certifications",
+            "required competencies",
+            "requirements",
+            "required qualifications",
+            "minimum qualifications",
+        ),
+    ),
+    (
+        "preferred_competencies_and_qualifications",
+        (
+            "preferred competencies and qualifications",
+            "preferred competencies",
+            "preferred qualifications",
+            "preferred requirements",
+            "good to have",
+        ),
+    ),
+)
+
+
+def extract_job_description_sections(description_text: str | None) -> dict[str, str]:
+    """Extract common structured sections from flattened job description text."""
+    if not description_text:
+        return {}
+
+    text = " ".join(description_text.split())
+    matches: list[tuple[int, int, str]] = []
+    seen_positions: set[int] = set()
+
+    for field_name, aliases in SECTION_HEADINGS:
+        for alias in aliases:
+            pattern = rf"(?<!\w){re.escape(alias)}(?!\w)\s*:?"
+            for match in re.finditer(pattern, text, flags=re.IGNORECASE):
+                if match.start() in seen_positions:
+                    continue
+                matches.append((match.start(), match.end(), field_name))
+                seen_positions.add(match.start())
+
+    if not matches:
+        return {}
+
+    matches.sort(key=lambda item: item[0])
+    sections: dict[str, str] = {}
+    for index, (_start, heading_end, field_name) in enumerate(matches):
+        next_start = matches[index + 1][0] if index + 1 < len(matches) else len(text)
+        value = text[heading_end:next_start].strip(" :-\n\t")
+        if value:
+            sections[field_name] = value
+    return sections
+
+
 def normalize_lever_posting(
     *,
     posting: dict[str, Any],
@@ -170,6 +234,7 @@ def normalize_careers_gov_posting(posting: dict[str, Any]) -> NormalizedJob:
         posting.get("uuid") or metadata.get("jobPostId") or posting.get("title")
     )
     description_text = _html_to_text(_clean(posting.get("description")) or "")
+    structured_sections = extract_job_description_sections(description_text)
     source_url = _careers_gov_link(posting)
     employment_types = _join_nested_values(
         posting.get("employmentTypes"), "employmentType"
@@ -195,7 +260,11 @@ def normalize_careers_gov_posting(posting: dict[str, Any]) -> NormalizedJob:
         salary_currency=_clean(salary.get("currency")) or "SGD",
         salary_interval=_clean(salary_type.get("salaryType")) or None,
         content_hash=_content_hash(description_text),
-        raw_payload={**posting, "source_api": "mycareersfuture"},
+        raw_payload={
+            **posting,
+            "source_api": "mycareersfuture",
+            "structured_sections": structured_sections,
+        },
         text_quality="full_text",
         source_updated_at=_parse_datetime(metadata.get("updatedAt")),
     )
