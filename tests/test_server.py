@@ -41,7 +41,64 @@ def test_health_and_overview_return_metadata(tmp_path) -> None:
         {"role_family": "Data Analyst", "job_count": 1}
     ]
     assert company_row["top_sources"] == [{"source": "lever", "posting_count": 1}]
+    demand_row = payload["data"]["company_demand_signals"][0]
+    assert demand_row["company_name"] == "Example Pte Ltd"
+    assert demand_row["active_listing_count"] == 1
+    assert demand_row["new_listing_count_7d"] == 1
     assert "Current snapshot only" in payload["data"]["trend_caveat"]
+
+
+def test_demand_signals_endpoint_returns_company_rankings(tmp_path) -> None:
+    app = _seed_app(tmp_path)
+    demand_endpoint = _endpoint(app, "/api/v1/analytics/demand-signals")
+
+    with app.state.session_factory() as session:
+        payload = demand_endpoint(days=7, limit=10, session=session)
+
+    assert payload["data"]["summary"]["active_listing_count"] == 1
+    assert payload["data"]["companies"][0]["company_name"] == "Example Pte Ltd"
+    assert payload["data"]["companies"][0]["active_listing_count"] == 1
+    assert payload["data"]["new_listings_by_company"][0]["new_listing_count"] == 1
+    assert "Repeated observations are not counted" in payload["data"]["caveat"]
+
+
+def test_individual_trend_endpoints_return_wrapped_rows(tmp_path) -> None:
+    app = _seed_app(tmp_path)
+    skill_endpoint = _endpoint(app, "/api/v1/analytics/trends/skills/{skill_name}")
+    salary_endpoint = _endpoint(app, "/api/v1/analytics/trends/salary/{family_id}")
+    velocity_endpoint = _endpoint(app, "/api/v1/analytics/trends/velocity")
+    company_velocity_endpoint = _endpoint(
+        app,
+        "/api/v1/analytics/trends/company-velocity",
+    )
+
+    with app.state.session_factory() as session:
+        skill_payload = skill_endpoint(skill_name="Python", weeks=4, session=session)
+        salary_payload = salary_endpoint(
+            family_id="data_analyst",
+            weeks=4,
+            session=session,
+        )
+        velocity_payload = velocity_endpoint(
+            weeks=4,
+            role_family=None,
+            session=session,
+        )
+        company_velocity_payload = company_velocity_endpoint(
+            weeks=4,
+            role_family=None,
+            limit=10,
+            session=session,
+        )
+
+    assert skill_payload["data"]["skill_name"] == "Python"
+    assert len(skill_payload["data"]["items"]) == 4
+    assert salary_payload["data"]["role_family"] == "data_analyst"
+    assert len(salary_payload["data"]["items"]) == 4
+    assert len(velocity_payload["data"]["items"]) == 4
+    assert company_velocity_payload["data"]["items"][0]["company_name"] == (
+        "Example Pte Ltd"
+    )
 
 
 def test_overview_can_be_scoped_to_role_family(tmp_path) -> None:

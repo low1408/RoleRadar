@@ -15,6 +15,7 @@ import {
   Search,
   ShieldCheck,
   Sun,
+  TrendingUp,
   X,
 } from "lucide-react";
 import "./styles.css";
@@ -34,6 +35,7 @@ const api = async (path, options) => {
 const navItems = [
   { href: "#/overview", label: "Overview", icon: BarChart3 },
   { href: "#/explorer", label: "Explorer", icon: Gauge },
+  { href: "#/trends", label: "Trends", icon: TrendingUp },
   { href: "#/jobs", label: "Evidence", icon: BriefcaseBusiness },
   { href: "#/load", label: "Load Sources", icon: Database },
   { href: "#/admin", label: "Admin", icon: ShieldCheck },
@@ -67,6 +69,9 @@ function App() {
   const [query, setQuery] = React.useState("");
   const [roleFamily, setRoleFamily] = React.useState("");
   const [overviewRoleFamily, setOverviewRoleFamily] = React.useState("");
+  const [trendRoleFamily, setTrendRoleFamily] = React.useState("");
+  const [trendSkill, setTrendSkill] = React.useState("");
+  const [trendWeeks, setTrendWeeks] = React.useState(12);
   const [roleFamilies, setRoleFamilies] = React.useState([]);
   const [payload, setPayload] = React.useState(null);
   const [selected, setSelected] = React.useState(null);
@@ -80,6 +85,9 @@ function App() {
     query,
     roleFamily,
     overviewRoleFamily,
+    trendRoleFamily,
+    trendSkill,
+    trendWeeks,
   );
   const viewPayload =
     payload?.routeSection === routeSection && payload?.key === payloadKey
@@ -102,6 +110,7 @@ function App() {
       !route.startsWith("#/jobs") &&
       !route.startsWith("#/overview") &&
       !route.startsWith("#/explorer") &&
+      !route.startsWith("#/trends") &&
       !route.startsWith("#/load")
     ) {
       return;
@@ -153,13 +162,24 @@ function App() {
       overviewParams.set("role_family", overviewRoleFamily);
     }
 
+    const trendParams = new URLSearchParams();
+    trendParams.set("weeks", String(trendWeeks));
+    if (trendRoleFamily && routeSection === "trends") {
+      trendParams.set("role_family", trendRoleFamily);
+    }
+    if (trendSkill && routeSection === "trends") {
+      trendParams.set("skill", trendSkill);
+    }
+
     const endpoint = route.startsWith("#/jobs")
       ? `/api/v1/jobs?limit=50&${params.toString()}`
       : route.startsWith("#/admin")
         ? "/api/v1/admin/duplicates?limit=50"
-        : `/api/v1/analytics/overview${
-            overviewParams.toString() ? `?${overviewParams.toString()}` : ""
-          }`;
+        : route.startsWith("#/trends")
+          ? `/api/v1/analytics/trends?${trendParams.toString()}`
+          : `/api/v1/analytics/overview${
+              overviewParams.toString() ? `?${overviewParams.toString()}` : ""
+            }`;
 
     api(endpoint, { signal: controller.signal })
       .then((response) => {
@@ -173,7 +193,17 @@ function App() {
       isCurrent = false;
       controller.abort();
     };
-  }, [route, routeSection, payloadKey, query, roleFamily, overviewRoleFamily]);
+  }, [
+    route,
+    routeSection,
+    payloadKey,
+    query,
+    roleFamily,
+    overviewRoleFamily,
+    trendRoleFamily,
+    trendSkill,
+    trendWeeks,
+  ]);
 
   const isLoadRoute = route.startsWith("#/load");
 
@@ -211,9 +241,23 @@ function App() {
             setSelected={setSelected}
           />
         )}
+        {viewPayload && route.startsWith("#/trends") && (
+          <TrendsView
+            payload={viewPayload}
+            roleFamilies={roleFamilies}
+            trendRoleFamily={trendRoleFamily}
+            setTrendRoleFamily={setTrendRoleFamily}
+            trendSkill={trendSkill}
+            setTrendSkill={setTrendSkill}
+            trendWeeks={trendWeeks}
+            setTrendWeeks={setTrendWeeks}
+            setSelected={setSelected}
+          />
+        )}
         {viewPayload &&
           !isLoadRoute &&
           !route.startsWith("#/jobs") &&
+          !route.startsWith("#/trends") &&
           !route.startsWith("#/admin") && (
             <OverviewView
               payload={viewPayload}
@@ -524,6 +568,30 @@ function OverviewView({
   const data = payload.data;
   const isExplorer = route.startsWith("#/explorer");
   const selectedRole = data.selected_role_family;
+  const [companySearch, setCompanySearch] = React.useState("");
+  const [sourceFilter, setSourceFilter] = React.useState("");
+  const [roleFilter, setRoleFilter] = React.useState("");
+  const [salaryFilter, setSalaryFilter] = React.useState("");
+  const [selectedCompanyName, setSelectedCompanyName] = React.useState("");
+
+  if (!isExplorer) {
+    return (
+      <CompanyOverview
+        payload={payload}
+        companySearch={companySearch}
+        setCompanySearch={setCompanySearch}
+        sourceFilter={sourceFilter}
+        setSourceFilter={setSourceFilter}
+        roleFilter={roleFilter}
+        setRoleFilter={setRoleFilter}
+        salaryFilter={salaryFilter}
+        setSalaryFilter={setSalaryFilter}
+        selectedCompanyName={selectedCompanyName}
+        setSelectedCompanyName={setSelectedCompanyName}
+        setSelected={setSelected}
+      />
+    );
+  }
 
   return (
     <>
@@ -583,6 +651,10 @@ function OverviewView({
         <HiringCompaniesPanel
           rows={data.top_hiring_companies || []}
           roleFamily={selectedRole}
+          setSelected={setSelected}
+        />
+        <DemandSignalsPanel
+          rows={data.company_demand_signals || []}
           setSelected={setSelected}
         />
       </section>
@@ -698,6 +770,353 @@ function RoleFamiliesPanel({
   );
 }
 
+function CompanyOverview({
+  payload,
+  companySearch,
+  setCompanySearch,
+  sourceFilter,
+  setSourceFilter,
+  roleFilter,
+  setRoleFilter,
+  salaryFilter,
+  setSalaryFilter,
+  selectedCompanyName,
+  setSelectedCompanyName,
+  setSelected,
+}) {
+  const data = payload.data;
+  const companies = data.top_hiring_companies || [];
+  const sourceRows = data.skill_extraction_coverage || [];
+  const latestRun = data.recent_ingestion_runs?.[0];
+  const errorRunCount = (data.recent_ingestion_runs || []).filter(
+    (run) => run.status !== "completed" || run.error_message,
+  ).length;
+  const salaryCoveragePercent = Math.round(
+    (data.kpis.salary_disclosure_rate || 0) * 100,
+  );
+  const latestCompanySeenAt = Math.max(
+    0,
+    ...companies.map((company) => new Date(company.latest_seen_at || 0).getTime()),
+  );
+  const latestSeenCompanyCount = latestCompanySeenAt
+    ? companies.filter(
+        (company) =>
+          new Date(company.latest_seen_at || 0).getTime() === latestCompanySeenAt,
+      ).length
+    : 0;
+  const companiesWithSalaryEstimate = Math.round(
+    (data.kpis.companies || 0) * (data.kpis.salary_disclosure_rate || 0),
+  );
+  const sourceOptionsForCompanies = uniqueSorted(
+    companies.flatMap((company) =>
+      (company.top_sources || []).map((item) => item.source),
+    ),
+  );
+  const roleOptionsForCompanies = uniqueSorted(
+    companies.flatMap((company) =>
+      (company.top_role_families || []).map((item) => item.role_family),
+    ),
+  );
+  const filteredCompanies = companies.filter((company) => {
+    const name = company.company_name || "UNKNOWN";
+    const roles = company.top_role_families || [];
+    const sources = company.top_sources || [];
+    const matchesSearch = name
+      .toLowerCase()
+      .includes(companySearch.trim().toLowerCase());
+    const matchesSource =
+      !sourceFilter || sources.some((item) => item.source === sourceFilter);
+    const matchesRole =
+      !roleFilter || roles.some((item) => item.role_family === roleFilter);
+    const matchesSalary =
+      !salaryFilter ||
+      (salaryFilter === "with_salary" && salaryCoveragePercent > 0) ||
+      (salaryFilter === "without_salary" && salaryCoveragePercent === 0);
+    return matchesSearch && matchesSource && matchesRole && matchesSalary;
+  });
+  const selectedCompany =
+    filteredCompanies.find(
+      (company) => company.company_name === selectedCompanyName,
+    ) ||
+    filteredCompanies[0] ||
+    null;
+
+  React.useEffect(() => {
+    if (
+      selectedCompany &&
+      selectedCompany.company_name !== selectedCompanyName
+    ) {
+      setSelectedCompanyName(selectedCompany.company_name);
+    }
+  }, [selectedCompany, selectedCompanyName, setSelectedCompanyName]);
+
+  return (
+    <section className="company-overview">
+      <div className="company-overview-topbar">
+        <div className="company-overview-brand">RoleRadar</div>
+        <CsvActions />
+      </div>
+
+      <div className="company-overview-heading">
+        <div className="eyebrow">Companies</div>
+        <h1>Hiring companies</h1>
+        <p>Track employer demand across Singapore job sources.</p>
+      </div>
+
+      <section className="company-kpi-grid">
+        <CompanyMetric
+          value={data.kpis.companies}
+          label="Companies hiring"
+          onClick={() => setSelected(metricDetail("Companies", data.kpis))}
+        />
+        <CompanyMetric
+          value={latestSeenCompanyCount}
+          label="New this run"
+          onClick={() => setSelected(latestRun || { key: "No ingestion run" })}
+        />
+        <CompanyMetric
+          value={companiesWithSalaryEstimate}
+          label="With salary data"
+          onClick={() => setSelected(data.salary.coverage)}
+        />
+        <CompanyMetric
+          value={(data.kpis.pending_duplicates || 0) + errorRunCount}
+          label="With errors / warnings"
+          onClick={() =>
+            setSelected({
+              key: "Errors / warnings",
+              pending_duplicates: data.kpis.pending_duplicates || 0,
+              recent_run_issues: errorRunCount,
+            })
+          }
+        />
+      </section>
+
+      <DemandSignalsPanel
+        rows={data.company_demand_signals || []}
+        setSelected={setSelected}
+      />
+
+      <section className="company-filters" aria-label="Company filters">
+        <label className="company-search">
+          <Search size={16} />
+          <input
+            value={companySearch}
+            onInput={(event) => setCompanySearch(event.target.value)}
+            placeholder="Search companies..."
+          />
+        </label>
+        <CompanySelect
+          label="Source"
+          value={sourceFilter}
+          onChange={setSourceFilter}
+          options={sourceOptionsForCompanies}
+          allLabel="All"
+          formatter={sourceLabel}
+        />
+        <CompanySelect
+          label="Role"
+          value={roleFilter}
+          onChange={setRoleFilter}
+          options={roleOptionsForCompanies}
+          allLabel="All"
+        />
+        <CompanySelect
+          label="Salary"
+          value={salaryFilter}
+          onChange={setSalaryFilter}
+          options={["with_salary", "without_salary"]}
+          allLabel="Any"
+          formatter={(value) =>
+            value === "with_salary" ? "With salary" : "No salary"
+          }
+        />
+      </section>
+
+      <CompanyTable
+        rows={filteredCompanies}
+        selectedCompany={selectedCompany}
+        setSelectedCompanyName={setSelectedCompanyName}
+        setSelected={setSelected}
+      />
+
+      <div className="selected-company-label">
+        Selected company:{" "}
+        <strong>{selectedCompany?.company_name || "No company selected"}</strong>
+      </div>
+
+      <CompanySnapshot
+        company={selectedCompany}
+        sourceRows={sourceRows}
+        salaryCoveragePercent={salaryCoveragePercent}
+      />
+
+      <footer className="meta-line">
+        Generated {new Date(payload.meta.generated_at).toLocaleString()}.{" "}
+        {data.trend_caveat}
+      </footer>
+    </section>
+  );
+}
+
+function CompanyMetric({ value, suffix = "", label, onClick }) {
+  return (
+    <button className="company-metric" onClick={onClick}>
+      <strong>
+        {formatNumber(value)}
+        {suffix}
+      </strong>
+      <span>{label}</span>
+    </button>
+  );
+}
+
+function CompanySelect({
+  label,
+  value,
+  onChange,
+  options,
+  allLabel,
+  formatter = (item) => item,
+}) {
+  return (
+    <label className="company-select">
+      <span>{label}:</span>
+      <select
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+      >
+        <option value="">{allLabel}</option>
+        {options.map((option) => (
+          <option value={option} key={option}>
+            {formatter(option)}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+function CompanyTable({
+  rows,
+  selectedCompany,
+  setSelectedCompanyName,
+  setSelected,
+}) {
+  if (!rows.length) {
+    return <EmptyState text="No companies match the active filters." />;
+  }
+
+  return (
+    <div className="company-table-shell">
+      <table className="company-table">
+        <thead>
+          <tr>
+            <th>Company</th>
+            <th>Active jobs</th>
+            <th>Top roles</th>
+            <th>Sources</th>
+            <th>Health</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((company) => {
+            const selected =
+              selectedCompany?.company_name === company.company_name;
+            return (
+              <tr
+                className={selected ? "selected" : ""}
+                key={company.company_name || "UNKNOWN"}
+                onClick={() => {
+                  setSelectedCompanyName(company.company_name);
+                  setSelected({ key: company.company_name, ...company });
+                }}
+              >
+                <td>{company.company_name || "UNKNOWN"}</td>
+                <td>{formatNumber(company.job_count)}</td>
+                <td>{companyTopRoles(company)}</td>
+                <td>{companySources(company)}</td>
+                <td>{companyHealth(company)}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function CompanySnapshot({ company, sourceRows, salaryCoveragePercent }) {
+  if (!company) {
+    return (
+      <section className="company-snapshot-grid">
+        <EmptyState text="Select a company to see employer details." />
+      </section>
+    );
+  }
+
+  const roles = company.top_role_families || [];
+  const sources = company.top_sources || [];
+  const sourceNames = sources.map((item) => item.source);
+  const sourceQuality = sourceRows.filter((row) => sourceNames.includes(row.source));
+
+  return (
+    <section className="company-snapshot-grid">
+      <div className="company-snapshot-card">
+        <h2>Employer snapshot</h2>
+        <dl>
+          <div>
+            <dt>Active jobs:</dt>
+            <dd>{formatNumber(company.job_count)}</dd>
+          </div>
+          <div>
+            <dt>Sources:</dt>
+            <dd>{companySources(company)}</dd>
+          </div>
+          <div>
+            <dt>Salary coverage:</dt>
+            <dd>{salaryCoveragePercent}%</dd>
+          </div>
+          <div>
+            <dt>Last seen:</dt>
+            <dd>{relativeTime(company.latest_seen_at)}</dd>
+          </div>
+          {!!sourceQuality.length && (
+            <div>
+              <dt>Source quality:</dt>
+              <dd>
+                {sourceQuality
+                  .map(
+                    (row) =>
+                      `${sourceLabel(row.source)} ${Math.round(
+                        row.full_text_rate * 100,
+                      )}%`,
+                  )
+                  .join(", ")}
+              </dd>
+            </div>
+          )}
+        </dl>
+      </div>
+      <div className="company-snapshot-card">
+        <h2>Open roles</h2>
+        {roles.length ? (
+          <ul className="company-role-list">
+            {roles.map((role) => (
+              <li key={role.role_family}>
+                <span>{role.role_family}</span>
+                <small>{formatNumber(role.job_count)} jobs</small>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <EmptyState text="No role-family data for this employer." />
+        )}
+      </div>
+    </section>
+  );
+}
+
 function HiringCompaniesPanel({ rows, roleFamily, setSelected }) {
   return (
     <section className="panel">
@@ -727,6 +1146,43 @@ function HiringCompaniesPanel({ rows, roleFamily, setSelected }) {
               <span className="hiring-company-metric">
                 <strong>{formatNumber(row.job_count)}</strong>
                 <small>jobs</small>
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function DemandSignalsPanel({ rows, setSelected }) {
+  return (
+    <section className="panel">
+      <PanelHeader
+        title="Company Demand"
+        subtitle="Mass-hiring signal from active and newly observed listings"
+      />
+
+      {!rows.length ? (
+        <EmptyState text="No company demand signals yet." />
+      ) : (
+        <div className="hiring-company-list">
+          {rows.slice(0, 8).map((row) => (
+            <button
+              className="hiring-company-row"
+              key={row.company_name}
+              onClick={() => setSelected({ key: row.company_name, ...row })}
+            >
+              <span className="hiring-company-main">
+                <strong>{row.company_name || "UNKNOWN"}</strong>
+                <small>
+                  {formatNumber(row.new_listing_count_7d)} new 7d ·{" "}
+                  {formatNumber(row.role_family_count)} role families
+                </small>
+              </span>
+              <span className="hiring-company-metric">
+                <strong>{formatNumber(row.active_listing_count)}</strong>
+                <small>active listings</small>
               </span>
             </button>
           ))}
@@ -785,6 +1241,289 @@ function SkillChart({ rows, roleFamily }) {
         </div>
       ) : (
         <EmptyState text="No job data detected. Run roleradar ingest or review Admin imports." />
+      )}
+    </section>
+  );
+}
+
+function TrendsView({
+  payload,
+  roleFamilies,
+  trendRoleFamily,
+  setTrendRoleFamily,
+  trendSkill,
+  setTrendSkill,
+  trendWeeks,
+  setTrendWeeks,
+  setSelected,
+}) {
+  const data = payload.data;
+  const skillRows = data.skill_demand || [];
+  const salaryRows = data.salary_trend || [];
+  const velocityRows = data.posting_velocity || [];
+  const companyRows = data.company_hiring_velocity || [];
+  const latestSkillRow = skillRows[skillRows.length - 1];
+  const latestVelocityRow = velocityRows[velocityRows.length - 1];
+  const selectedRoleLabel = data.selected_role_family || "All role families";
+
+  return (
+    <>
+      <PageHeader
+        eyebrow="Trend Engine"
+        title="Track momentum, not just current demand"
+        meta={`${data.weeks} weeks · ${selectedRoleLabel}`}
+        actions={<CsvActions />}
+      />
+
+      <section className="panel trend-controls-panel">
+        <PanelHeader
+          title="Trend filters"
+          subtitle="Choose the observation window, role family, and skill to track."
+        />
+        <div className="trend-controls">
+          <label className="field-control">
+            <span>Weeks</span>
+            <select
+              value={trendWeeks}
+              onChange={(event) => setTrendWeeks(Number(event.target.value))}
+            >
+              {[4, 8, 12, 26, 52].map((weeks) => (
+                <option value={weeks} key={weeks}>
+                  {weeks} weeks
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="field-control">
+            <span>Role family</span>
+            <select
+              value={trendRoleFamily}
+              onChange={(event) => setTrendRoleFamily(event.target.value)}
+            >
+              <option value="">All role families</option>
+              {roleFamilies.map((row) => (
+                <option value={row.id} key={row.id}>
+                  {row.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="field-control">
+            <span>Skill</span>
+            <input
+              list="trend-skill-options"
+              value={trendSkill}
+              onInput={(event) => setTrendSkill(event.target.value)}
+              placeholder={data.selected_skill || "Python"}
+            />
+            <datalist id="trend-skill-options">
+              {(data.top_skills || []).map((row) => (
+                <option value={row.skill_name} key={row.skill_name} />
+              ))}
+            </datalist>
+          </label>
+          <button
+            className="action-button"
+            onClick={() => {
+              setTrendRoleFamily("");
+              setTrendSkill("");
+              setTrendWeeks(12);
+            }}
+          >
+            Clear filters
+          </button>
+        </div>
+      </section>
+
+      <section className="trend-kpi-grid">
+        <TrendKpiCard
+          label="Selected skill"
+          value={data.selected_skill || "No skill"}
+          detail={
+            latestSkillRow
+              ? `${formatSignedNumber(latestSkillRow.delta)} WoW`
+              : "No observations"
+          }
+          onClick={() => setSelected({ key: "Skill trend", ...latestSkillRow })}
+        />
+        <TrendKpiCard
+          label="New postings this week"
+          value={latestVelocityRow?.new_posting_count || 0}
+          detail={`${latestVelocityRow?.closed_posting_count || 0} closed`}
+          onClick={() => setSelected({ key: "Posting velocity", ...latestVelocityRow })}
+        />
+        <TrendKpiCard
+          label="Median time to close"
+          value={formatDays(data.time_to_close?.median_days)}
+          detail={`${formatNumber(data.time_to_close?.posting_count || 0)} closed jobs`}
+          onClick={() => setSelected({ key: "Time to close", ...data.time_to_close })}
+        />
+        <TrendKpiCard
+          label="P75 time to close"
+          value={formatDays(data.time_to_close?.p75_days)}
+          detail="Apply before slowest quartile closes"
+          onClick={() => setSelected({ key: "Time to close", ...data.time_to_close })}
+        />
+      </section>
+
+      <section className="trend-grid">
+        <TrendChart
+          title="Skill demand over time"
+          subtitle={`Active jobs mentioning ${data.selected_skill || "selected skill"}`}
+          rows={skillRows}
+          datasets={[
+            { label: "Active jobs", key: "count", color: "#0d9488" },
+          ]}
+        />
+        <TrendChart
+          title="Posting velocity"
+          subtitle="New postings and closures per ISO week"
+          rows={velocityRows}
+          datasets={[
+            { label: "New", key: "new_posting_count", color: "#2563eb" },
+            { label: "Closed", key: "closed_posting_count", color: "#f97316" },
+          ]}
+        />
+      </section>
+
+      <section className="trend-grid secondary">
+        <TrendChart
+          title="Salary trend"
+          subtitle="Average annualized midpoint for selected role family"
+          rows={salaryRows}
+          datasets={[
+            {
+              label: "Annualized midpoint",
+              key: "average_annualized_midpoint",
+              color: "#7c3aed",
+            },
+          ]}
+          valueFormatter={formatAnnualSalary}
+        />
+        <CompanyVelocityPanel rows={companyRows} setSelected={setSelected} />
+      </section>
+
+      <footer className="meta-line">
+        Generated {new Date(payload.meta.generated_at).toLocaleString()}. {data.caveat}
+      </footer>
+    </>
+  );
+}
+
+function TrendKpiCard({ label, value, detail, onClick }) {
+  return (
+    <button className="trend-kpi-card" onClick={onClick}>
+      <span>{label}</span>
+      <strong>{typeof value === "number" ? formatNumber(value) : value}</strong>
+      <small>{detail}</small>
+    </button>
+  );
+}
+
+function TrendChart({ title, subtitle, rows, datasets, valueFormatter = formatValue }) {
+  const canvasRef = React.useRef(null);
+  const hasValues = rows.some((row) =>
+    datasets.some((dataset) => typeof row[dataset.key] === "number"),
+  );
+
+  React.useEffect(() => {
+    if (!canvasRef.current || !hasValues) return undefined;
+    const chart = new Chart(canvasRef.current, {
+      type: "line",
+      data: {
+        labels: rows.map((row) => formatWeek(row.week_start)),
+        datasets: datasets.map((dataset) => ({
+          label: dataset.label,
+          data: rows.map((row) => row[dataset.key]),
+          borderColor: dataset.color,
+          backgroundColor: dataset.color,
+          borderWidth: 2,
+          pointRadius: 3,
+          tension: 0.28,
+          spanGaps: true,
+        })),
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { position: "bottom" },
+          tooltip: {
+            callbacks: {
+              label: (context) =>
+                `${context.dataset.label}: ${valueFormatter(context.parsed.y)}`,
+            },
+          },
+        },
+        scales: {
+          x: { grid: { display: false } },
+          y: { grid: { color: "rgba(100, 116, 139, 0.16)" } },
+        },
+      },
+    });
+    return () => chart.destroy();
+  }, [rows, datasets, hasValues, valueFormatter]);
+
+  return (
+    <section className="panel chart-panel">
+      <PanelHeader title={title} subtitle={subtitle} />
+      {hasValues ? (
+        <div className="chart-box">
+          <canvas ref={canvasRef} />
+        </div>
+      ) : (
+        <EmptyState text="No trend data yet. Run repeated ingestion to accumulate observations." />
+      )}
+    </section>
+  );
+}
+
+function CompanyVelocityPanel({ rows, setSelected }) {
+  const companyRows = Object.values(
+    rows.reduce((acc, row) => {
+      const key = row.company_name || "UNKNOWN";
+      acc[key] = acc[key] || { company_name: key, total_new_postings: 0, weeks: [] };
+      acc[key].total_new_postings += row.new_posting_count || 0;
+      acc[key].weeks.push(row);
+      return acc;
+    }, {}),
+  ).sort((left, right) =>
+    right.total_new_postings - left.total_new_postings ||
+    left.company_name.localeCompare(right.company_name),
+  );
+
+  return (
+    <section className="panel">
+      <PanelHeader
+        title="Company hiring velocity"
+        subtitle="Companies adding the most postings in the selected window"
+      />
+      {!companyRows.length ? (
+        <EmptyState text="No company velocity data in this window." />
+      ) : (
+        <div className="trend-table-shell">
+          <table>
+            <thead>
+              <tr>
+                <th>Company</th>
+                <th>New postings</th>
+                <th>Latest active week</th>
+              </tr>
+            </thead>
+            <tbody>
+              {companyRows.slice(0, 10).map((row) => {
+                const latestWeek = row.weeks[row.weeks.length - 1];
+                return (
+                  <tr key={row.company_name} onClick={() => setSelected(row)}>
+                    <td>{row.company_name}</td>
+                    <td>{formatNumber(row.total_new_postings)}</td>
+                    <td>{formatWeek(latestWeek?.week_start)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       )}
     </section>
   );
@@ -1167,12 +1906,24 @@ function getRouteSection(route) {
   if (route.startsWith("#/jobs")) return "jobs";
   if (route.startsWith("#/admin")) return "admin";
   if (route.startsWith("#/load")) return "load";
+  if (route.startsWith("#/trends")) return "trends";
   return "overview";
 }
 
-function getPayloadKey(routeSection, query, roleFamily, overviewRoleFamily) {
+function getPayloadKey(
+  routeSection,
+  query,
+  roleFamily,
+  overviewRoleFamily,
+  trendRoleFamily,
+  trendSkill,
+  trendWeeks,
+) {
   if (routeSection === "jobs") return `jobs:${query}:${roleFamily}`;
   if (routeSection === "overview") return `overview:${overviewRoleFamily}`;
+  if (routeSection === "trends") {
+    return `trends:${trendRoleFamily}:${trendSkill}:${trendWeeks}`;
+  }
   return routeSection;
 }
 
@@ -1203,6 +1954,29 @@ function formatAnnualSalary(value) {
   }).format(value)}`;
 }
 
+function formatWeek(value) {
+  if (!value) return "—";
+  const date = new Date(`${value}T00:00:00Z`);
+  if (Number.isNaN(date.getTime())) return "—";
+  return date.toLocaleDateString("en-SG", {
+    day: "2-digit",
+    month: "short",
+  });
+}
+
+function formatSignedNumber(value) {
+  if (typeof value !== "number") return "n/a";
+  if (value > 0) return `+${formatNumber(value)}`;
+  return formatNumber(value);
+}
+
+function formatDays(value) {
+  if (typeof value !== "number") return "n/a";
+  return `${new Intl.NumberFormat("en-SG", {
+    maximumFractionDigits: 1,
+  }).format(value)} days`;
+}
+
 function roleFamilySubtitle(row) {
   const skills = (row.top_skills || [])
     .slice(0, 3)
@@ -1224,6 +1998,48 @@ function hiringCompanySubtitle(row) {
   const listingCount = formatNumber(row.source_listing_count || 0);
   if (roles) return `${roles} · ${listingCount} source listings`;
   return `${listingCount} source listings`;
+}
+
+function uniqueSorted(values) {
+  return [...new Set(values.filter(Boolean))].sort((left, right) =>
+    String(left).localeCompare(String(right)),
+  );
+}
+
+function companyTopRoles(company) {
+  const roles = (company.top_role_families || [])
+    .slice(0, 2)
+    .map((item) => item.role_family)
+    .join(", ");
+  return roles || "—";
+}
+
+function companySources(company) {
+  const sources = (company.top_sources || [])
+    .slice(0, 2)
+    .map((item) => sourceLabel(item.source))
+    .join(", ");
+  return sources || "—";
+}
+
+function companyHealth(company) {
+  if (!company.job_count) return "No active jobs";
+  if (!company.source_listing_count) return "Parser warning";
+  return "Healthy";
+}
+
+function relativeTime(value) {
+  if (!value) return "Unknown";
+  const timestamp = new Date(value).getTime();
+  if (Number.isNaN(timestamp)) return "Unknown";
+  const diffSeconds = Math.max(0, Math.round((Date.now() - timestamp) / 1000));
+  if (diffSeconds < 60) return "Just now";
+  const diffMinutes = Math.round(diffSeconds / 60);
+  if (diffMinutes < 60) return `${diffMinutes} min ago`;
+  const diffHours = Math.round(diffMinutes / 60);
+  if (diffHours < 24) return `${diffHours} hr ago`;
+  const diffDays = Math.round(diffHours / 24);
+  return `${diffDays} day${diffDays === 1 ? "" : "s"} ago`;
 }
 
 function formatDetail(value) {

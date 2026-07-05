@@ -5,7 +5,10 @@ from __future__ import annotations
 import csv
 from collections.abc import Iterable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
+
+from sqlalchemy import select
 
 from roleradar.analytics.skill_matcher import extract_and_persist_job_skills
 from roleradar.ingestion.normalize_jobs import (
@@ -27,10 +30,17 @@ from roleradar.storage.database import (
     create_session_factory,
     init_database,
 )
-from roleradar.storage.models import IngestionRun
+from roleradar.storage.models import (
+    IngestionRun,
+    Job,
+    PostingObservation,
+    SourceListing,
+)
 from roleradar.storage.repositories import IngestionRunRepository, JobRepository
 
 SUPPORTED_SOURCES = ("adzuna", "careers_gov", "greenhouse", "jobstreet", "lever")
+QUERY_SOURCES = {"adzuna", "careers_gov", "jobstreet"}
+CONSECUTIVE_MISSES_TO_CLOSE = 3
 
 
 @dataclass(frozen=True)
@@ -226,6 +236,17 @@ def ingest_jobs(
             role_family_id=role_family_id,
             )
 
+        if source in QUERY_SOURCES and query and counters.targets_ingested > 0:
+            missing_observations = _record_missing_query_source_listings(
+                session=session,
+                job_repo=job_repo,
+                run=run,
+                source=source,
+                query=query,
+                current_source_listing_ids=counters.current_source_listing_ids,
+            )
+            counters.observations_created += missing_observations
+
         run_status = (
             "completed" if counters.targets_failed == 0 else "completed_with_errors"
         )
@@ -249,14 +270,18 @@ class _Counters:
     observations_created: int = 0
     job_skills_extracted: int = 0
     duplicate_candidates: int = 0
+    current_source_listing_ids: set[int] | None = None
 
-    def add_persisted(self, values: tuple[int, int, int, int, int]) -> None:
-        seen, upserted, observations, skills, candidates = values
+    def add_persisted(self, values: tuple[int, int, int, int, int, set[int]]) -> None:
+        seen, upserted, observations, skills, candidates, listing_ids = values
         self.jobs_seen += seen
         self.source_listings_upserted += upserted
         self.observations_created += observations
         self.job_skills_extracted += skills
         self.duplicate_candidates += candidates
+        if self.current_source_listing_ids is None:
+            self.current_source_listing_ids = set()
+        self.current_source_listing_ids.update(listing_ids)
 
     def as_result_kwargs(self) -> dict[str, int]:
         return {
@@ -306,6 +331,7 @@ def _ingest_adzuna(
             normalized_jobs=normalized_jobs,
             run=run,
             job_repo=job_repo,
+            query=query,
             role_family_id=role_family_id,
         )
     )
@@ -344,6 +370,7 @@ def _ingest_careers_gov(
             normalized_jobs=normalized_jobs,
             run=run,
             job_repo=job_repo,
+            query=query,
             role_family_id=role_family_id,
         )
     )
@@ -382,6 +409,7 @@ def _ingest_jobstreet(
             normalized_jobs=normalized_jobs,
             run=run,
             job_repo=job_repo,
+            query=query,
             role_family_id=role_family_id,
         )
     )
@@ -417,6 +445,7 @@ def _ingest_target_boards(
                 normalized_jobs=normalized_jobs,
                 run=run,
                 job_repo=job_repo,
+                query=None,
                 role_family_id=role_family_id,
             )
         )
@@ -427,16 +456,23 @@ def _persist_normalized_jobs(
     normalized_jobs: list[NormalizedJob],
     run: IngestionRun,
     job_repo: JobRepository,
+    query: str | None,
     role_family_id: str | None,
-) -> tuple[int, int, int, int, int]:
+) -> tuple[int, int, int, int, int, set[int]]:
     jobs_seen = 0
     source_listings_upserted = 0
     observations_created = 0
     job_skills_extracted = 0
     duplicate_candidates = 0
+    source_listing_ids: set[int] = set()
 
     for normalized_job in _deduplicate_normalized_jobs(normalized_jobs):
         jobs_seen += 1
+        raw_payload = _raw_payload_with_ingestion_metadata(
+            normalized_job.raw_payload,
+            query=query,
+            role_family_id=role_family_id,
+        )
         company = job_repo.get_or_create_company(name=normalized_job.company_name)
         job = job_repo.get_or_create_job(
             title=normalized_job.title,
@@ -446,7 +482,7 @@ def _persist_normalized_jobs(
             description_text=normalized_job.description_text,
             content_hash=normalized_job.content_hash,
             role_family_id=role_family_id,
-            raw_payload=normalized_job.raw_payload,
+            raw_payload=raw_payload,
         )
         listing = job_repo.upsert_source_listing(
             source=normalized_job.source,
@@ -466,15 +502,17 @@ def _persist_normalized_jobs(
             salary_currency=normalized_job.salary_currency,
             salary_interval=normalized_job.salary_interval,
             content_hash=normalized_job.content_hash,
-            raw_payload=normalized_job.raw_payload,
+            raw_payload=raw_payload,
             source_updated_at=normalized_job.source_updated_at,
         )
+        if listing.id is not None:
+            source_listing_ids.add(listing.id)
         source_listings_upserted += 1
         job_repo.record_observation(
             source_listing=listing,
             ingestion_run=run,
             content_hash=normalized_job.content_hash,
-            raw_payload=normalized_job.raw_payload,
+            raw_payload=raw_payload,
             source_updated_at=normalized_job.source_updated_at,
         )
         observations_created += 1
@@ -491,7 +529,125 @@ def _persist_normalized_jobs(
         observations_created,
         job_skills_extracted,
         duplicate_candidates,
+        source_listing_ids,
     )
+
+
+def _record_missing_query_source_listings(
+    *,
+    session,
+    job_repo: JobRepository,
+    run: IngestionRun,
+    source: str,
+    query: str,
+    current_source_listing_ids: set[int] | None,
+) -> int:
+    current_ids = current_source_listing_ids or set()
+    normalized_query = _normalize_query(query)
+    missing_observations = 0
+    source_listings = session.scalars(
+        select(SourceListing).where(SourceListing.source == source)
+    ).all()
+
+    for listing in source_listings:
+        if listing.id in current_ids:
+            continue
+        if _listing_ingestion_query(listing) != normalized_query:
+            continue
+        job_repo.record_observation(
+            source_listing=listing,
+            ingestion_run=run,
+            is_active=False,
+            content_hash=listing.content_hash,
+            raw_payload=listing.raw_payload,
+            source_updated_at=listing.source_updated_at,
+        )
+        missing_observations += 1
+        if (
+            _consecutive_inactive_observation_count(session, listing)
+            >= CONSECUTIVE_MISSES_TO_CLOSE
+            and listing.job is not None
+            and _all_job_source_listings_latest_inactive(session, listing.job)
+        ):
+            listing.job.closed_at = datetime.now(UTC)
+
+    session.flush()
+    return missing_observations
+
+
+def _raw_payload_with_ingestion_metadata(
+    raw_payload: dict,
+    *,
+    query: str | None,
+    role_family_id: str | None,
+) -> dict:
+    metadata = {
+        "query": _normalize_query(query),
+        "role_family_id": role_family_id,
+    }
+    return {
+        **raw_payload,
+        "_roleradar_ingestion": metadata,
+    }
+
+
+def _listing_ingestion_query(listing: SourceListing) -> str | None:
+    raw_payload = listing.raw_payload if isinstance(listing.raw_payload, dict) else {}
+    metadata = raw_payload.get("_roleradar_ingestion")
+    if not isinstance(metadata, dict):
+        return None
+    return _normalize_query(metadata.get("query"))
+
+
+def _normalize_query(value: object) -> str | None:
+    normalized = " ".join(str(value or "").strip().casefold().split())
+    return normalized or None
+
+
+def _consecutive_inactive_observation_count(
+    session,
+    listing: SourceListing,
+) -> int:
+    if listing.id is None:
+        return 0
+    observations = list(
+        session.scalars(
+            select(PostingObservation)
+            .where(PostingObservation.source_listing_id == listing.id)
+            .order_by(
+                PostingObservation.observed_at.desc(),
+                PostingObservation.id.desc(),
+            )
+            .limit(CONSECUTIVE_MISSES_TO_CLOSE)
+        )
+    )
+    count = 0
+    for observation in observations:
+        if observation.is_active:
+            break
+        count += 1
+    return count
+
+
+def _all_job_source_listings_latest_inactive(session, job: Job) -> bool:
+    listings = list(job.source_listings)
+    if not listings:
+        return False
+    for listing in listings:
+        if listing.id is None:
+            return False
+        latest_observation = session.scalar(
+            select(PostingObservation)
+            .where(PostingObservation.source_listing_id == listing.id)
+            .order_by(
+                PostingObservation.observed_at.desc(),
+                PostingObservation.id.desc(),
+            )
+            .limit(1)
+        )
+        if latest_observation is None or latest_observation.is_active:
+            return False
+    return True
 
 
 def _deduplicate_normalized_jobs(

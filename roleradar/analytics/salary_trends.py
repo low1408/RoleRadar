@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
-from statistics import mean
+from statistics import mean, median, quantiles
 
-from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
+from roleradar.analytics.queries import (
+    active_source_listings as _active_source_listings,
+)
 from roleradar.analytics.skill_trends import DEFAULT_ROLE_KEYWORDS
-from roleradar.storage.models import Job, PostingObservation, SourceListing
+from roleradar.storage.models import SourceListing
 
 
 @dataclass(frozen=True)
@@ -26,6 +27,9 @@ class SalarySummary:
     average_max_salary: float | None
     average_midpoint: float | None
     average_annualized_midpoint: float | None
+    p25_annualized_midpoint: float | None
+    median_annualized_midpoint: float | None
+    p75_annualized_midpoint: float | None
     closed_range_count: int
 
 
@@ -47,6 +51,9 @@ class SalarySegmentSummary:
     segment: str
     posting_count: int
     average_annualized_midpoint: float | None
+    p25_annualized_midpoint: float | None
+    median_annualized_midpoint: float | None
+    p75_annualized_midpoint: float | None
 
 
 @dataclass(frozen=True)
@@ -122,6 +129,17 @@ def salary_range_summaries(
                 average_midpoint=mean(midpoints) if midpoints else None,
                 average_annualized_midpoint=(
                     mean(annualized_midpoints) if annualized_midpoints else None
+                ),
+                p25_annualized_midpoint=_percentile(
+                    annualized_midpoints,
+                    quartile=1,
+                ),
+                median_annualized_midpoint=(
+                    median(annualized_midpoints) if annualized_midpoints else None
+                ),
+                p75_annualized_midpoint=_percentile(
+                    annualized_midpoints,
+                    quartile=3,
                 ),
                 closed_range_count=len(midpoints),
             )
@@ -342,6 +360,9 @@ def _salary_segments(
             segment=segment,
             posting_count=len(values),
             average_annualized_midpoint=mean(values) if values else None,
+            p25_annualized_midpoint=_percentile(values, quartile=1),
+            median_annualized_midpoint=median(values) if values else None,
+            p75_annualized_midpoint=_percentile(values, quartile=3),
         )
         for segment, values in grouped.items()
     ]
@@ -353,46 +374,6 @@ def _salary_segments(
             summary.segment,
         ),
     )[:limit]
-
-
-def _active_source_listings(
-    session: Session,
-    *,
-    days: int | None = None,
-) -> list[SourceListing]:
-    latest_observation = (
-        select(
-            PostingObservation.source_listing_id.label("source_listing_id"),
-            func.max(PostingObservation.observed_at).label("observed_at"),
-        )
-        .group_by(PostingObservation.source_listing_id)
-        .subquery()
-    )
-    query = (
-        select(SourceListing)
-        .join(Job, Job.id == SourceListing.job_id)
-        .outerjoin(
-            latest_observation,
-            latest_observation.c.source_listing_id == SourceListing.id,
-        )
-        .outerjoin(
-            PostingObservation,
-            and_(
-                PostingObservation.source_listing_id == SourceListing.id,
-                PostingObservation.observed_at == latest_observation.c.observed_at,
-            ),
-        )
-        .where(
-            Job.closed_at.is_(None),
-            or_(
-                PostingObservation.id.is_(None),
-                PostingObservation.is_active.is_(True),
-            ),
-        )
-    )
-    if days is not None:
-        query = query.where(SourceListing.last_seen_at >= _cutoff(days))
-    return list(session.scalars(query).unique().all())
 
 
 def _coverage(group: str, total_count: int, salary_count: int) -> SalaryCoverage:
@@ -446,5 +427,9 @@ def _annualization_multiplier(interval: str | None) -> float | None:
     return None
 
 
-def _cutoff(days: int) -> datetime:
-    return datetime.now(UTC) - timedelta(days=days)
+def _percentile(values: list[float], *, quartile: int) -> float | None:
+    if not values:
+        return None
+    if len(values) == 1:
+        return values[0]
+    return quantiles(sorted(values), n=4, method="inclusive")[quartile - 1]

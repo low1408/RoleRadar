@@ -216,6 +216,18 @@ class FakeDuplicateCareersGovClient:
         ]
 
 
+class EmptyCareersGovClient:
+    def search_jobs(
+        self,
+        *,
+        query: str | None = None,
+        limit: int = 20,
+        max_pages: int = 1,
+    ) -> list[dict]:
+        assert query == "data analyst"
+        return []
+
+
 class FakeJobstreetClient:
     def search_jobs(
         self,
@@ -623,6 +635,100 @@ def test_ingest_jobs_deduplicates_careers_gov_batch_by_source_job_id(
     assert listings[0].salary_min == 6000
     assert listings[0].salary_max == 8000
     assert len(observations) == 1
+
+
+def test_repeated_careers_gov_ingestion_adds_observations_not_duplicate_listings(
+    tmp_path,
+) -> None:
+    db_url = f"sqlite:///{tmp_path / 'careers-gov-repeat.sqlite3'}"
+    seed_file = tmp_path / "skills.csv"
+    _write_seed_file(seed_file)
+    _seed_taxonomy(db_url, seed_file)
+
+    for _ in range(2):
+        ingest_jobs(
+            database_url=db_url,
+            source="careers_gov",
+            query="data analyst",
+            max_pages=2,
+            careers_gov_throttle_seconds=0,
+            careers_gov_client=FakeCareersGovClient(),
+        )
+
+    engine = create_database_engine(db_url)
+    session_factory = create_session_factory(engine)
+    with session_factory() as session:
+        listings = session.scalars(select(SourceListing)).all()
+        observations = session.scalars(select(PostingObservation)).all()
+
+    assert len(listings) == 1
+    assert len(observations) == 2
+    assert all(observation.is_active for observation in observations)
+
+
+def test_careers_gov_missing_listing_closes_after_three_consecutive_misses(
+    tmp_path,
+) -> None:
+    db_url = f"sqlite:///{tmp_path / 'careers-gov-closure.sqlite3'}"
+    seed_file = tmp_path / "skills.csv"
+    _write_seed_file(seed_file)
+    _seed_taxonomy(db_url, seed_file)
+
+    ingest_jobs(
+        database_url=db_url,
+        source="careers_gov",
+        query="data analyst",
+        max_pages=2,
+        careers_gov_throttle_seconds=0,
+        careers_gov_client=FakeCareersGovClient(),
+    )
+    for _ in range(2):
+        ingest_jobs(
+            database_url=db_url,
+            source="careers_gov",
+            query="data analyst",
+            max_pages=2,
+            careers_gov_throttle_seconds=0,
+            careers_gov_client=EmptyCareersGovClient(),
+        )
+
+    engine = create_database_engine(db_url)
+    session_factory = create_session_factory(engine)
+    with session_factory() as session:
+        listing = session.scalars(select(SourceListing)).one()
+        observations = session.scalars(
+            select(PostingObservation).order_by(PostingObservation.id)
+        ).all()
+        assert listing.job is not None
+        assert listing.job.closed_at is None
+        assert [observation.is_active for observation in observations] == [
+            True,
+            False,
+            False,
+        ]
+
+    ingest_jobs(
+        database_url=db_url,
+        source="careers_gov",
+        query="data analyst",
+        max_pages=2,
+        careers_gov_throttle_seconds=0,
+        careers_gov_client=EmptyCareersGovClient(),
+    )
+
+    with session_factory() as session:
+        listing = session.scalars(select(SourceListing)).one()
+        observations = session.scalars(
+            select(PostingObservation).order_by(PostingObservation.id)
+        ).all()
+        assert listing.job is not None
+        assert listing.job.closed_at is not None
+        assert [observation.is_active for observation in observations] == [
+            True,
+            False,
+            False,
+            False,
+        ]
 
 
 def test_ingest_jobs_uses_jobstreet_query_without_targets(tmp_path) -> None:

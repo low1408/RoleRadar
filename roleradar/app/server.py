@@ -21,6 +21,13 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload, sessionmaker
 
+from roleradar.analytics.demand_signals import (
+    active_listings_by_company,
+    active_listings_by_company_and_role_family,
+    active_listings_summary,
+    company_hiring_breadth,
+    new_listings_by_company,
+)
 from roleradar.analytics.role_intelligence import (
     canonical_role_family,
     canonical_role_family_by_id,
@@ -41,6 +48,13 @@ from roleradar.analytics.salary_trends import (
 from roleradar.analytics.skill_trends import (
     skill_extraction_coverage_by_source,
     top_skills,
+)
+from roleradar.analytics.trend_engine import (
+    company_hiring_velocity,
+    posting_velocity,
+    salary_trend_over_time,
+    skill_demand_over_time,
+    time_to_close,
 )
 from roleradar.config.settings import Settings
 from roleradar.ingestion.fetch_jobs import ingest_jobs
@@ -153,6 +167,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         recent_runs = _recent_ingestion_runs(session, limit=5)
         pending_duplicates = _count_duplicates(session, status="pending")
         total_listings = _count(session, SourceListing)
+        demand_summary = active_listings_summary(session)
+        demand_rows = active_listings_by_company(session, limit=10)
         scoped_skill_rows = (
             [
                 {"skill_name": skill_name, "job_count": job_count}
@@ -185,6 +201,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 ),
                 "pending_duplicates": pending_duplicates,
                 "salary_disclosure_rate": coverage.disclosure_rate,
+                "active_listings": demand_summary.active_listing_count,
+                "new_listings_7d": demand_summary.new_listing_count_7d,
+                "new_listings_30d": demand_summary.new_listing_count_30d,
+                "active_role_families": demand_summary.role_family_count,
             },
             "selected_role_family": (
                 _role_family_payload(selected_role)
@@ -202,6 +222,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "top_hiring_companies": [
                 _hiring_company_payload(row)
                 for row in company_rows
+            ],
+            "company_demand_signals": [
+                _company_demand_signal_payload(row) for row in demand_rows
             ],
             "salary": {
                 "coverage": _salary_coverage_payload(coverage),
@@ -225,6 +248,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         "average_annualized_midpoint": (
                             row.average_annualized_midpoint
                         ),
+                        "p25_annualized_midpoint": row.p25_annualized_midpoint,
+                        "median_annualized_midpoint": (
+                            row.median_annualized_midpoint
+                        ),
+                        "p75_annualized_midpoint": row.p75_annualized_midpoint,
                     }
                     for row in salary_summaries
                 ],
@@ -270,6 +298,304 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 else total_listings
             ),
             missing_data_counts=_missing_counts(session),
+        )
+
+    @app.get("/api/v1/analytics/demand-signals")
+    def analytics_demand_signals(
+        days: int = Query(default=7, ge=1, le=366),
+        limit: int = Query(default=10, ge=1, le=100),
+        session: Session = Depends(get_session),
+    ) -> dict[str, Any]:
+        summary = active_listings_summary(session)
+        data = {
+            "summary": _active_listings_summary_payload(summary),
+            "companies": [
+                _company_demand_signal_payload(row)
+                for row in active_listings_by_company(session, limit=limit)
+            ],
+            "company_role_families": [
+                _company_role_family_demand_payload(row)
+                for row in active_listings_by_company_and_role_family(
+                    session,
+                    limit=limit * 5,
+                )
+            ],
+            "new_listings_by_company": [
+                _new_listings_by_company_payload(row)
+                for row in new_listings_by_company(
+                    session,
+                    days=days,
+                    limit=limit,
+                )
+            ],
+            "company_hiring_breadth": [
+                _company_hiring_breadth_payload(row)
+                for row in company_hiring_breadth(session, limit=limit)
+            ],
+            "caveat": (
+                "New listings are counted from first_seen_at. "
+                "Repeated observations are not counted as new listings."
+            ),
+        }
+        return _wrapped(
+            session,
+            data,
+            applied_filters={"days": days, "limit": limit},
+            sample_size=len(data["companies"]),
+            missing_data_counts=_missing_counts(session),
+        )
+
+    @app.get("/api/v1/analytics/trends")
+    def analytics_trends(
+        weeks: int = Query(default=12, ge=1, le=52),
+        skill: str | None = None,
+        role_family: str | None = None,
+        session: Session = Depends(get_session),
+    ) -> dict[str, Any]:
+        if role_family and not _is_supported_role_family_id(role_family):
+            raise HTTPException(status_code=422, detail="Unsupported role_family")
+
+        selected_skill = _selected_trend_skill(
+            session,
+            skill=skill,
+            role_family=role_family,
+        )
+        skill_rows = (
+            skill_demand_over_time(
+                session,
+                skill_name=selected_skill,
+                weeks=weeks,
+            )
+            if selected_skill
+            else []
+        )
+        salary_rows = (
+            salary_trend_over_time(
+                session,
+                family_id=role_family,
+                weeks=weeks,
+            )
+            if role_family
+            else []
+        )
+        velocity_rows = posting_velocity(
+            session,
+            family_id=role_family,
+            weeks=weeks,
+        )
+        company_velocity_rows = company_hiring_velocity(
+            session,
+            family_id=role_family,
+            weeks=weeks,
+            limit=50,
+        )
+        close_stats = time_to_close(session, family_id=role_family)
+        role_rows = role_family_summaries(session, days=None, limit=None)
+        data = {
+            "weeks": weeks,
+            "selected_skill": selected_skill,
+            "selected_role_family": _role_family_label(role_family),
+            "selected_role_family_id": role_family,
+            "available_role_families": [
+                _role_family_payload(row) for row in role_rows
+            ],
+            "top_skills": [
+                {"skill_name": row.skill_name, "job_count": row.job_count}
+                for row in top_skills(session, days=None, limit=20)
+            ],
+            "skill_demand": [
+                {
+                    "week_start": row.week_start.isoformat(),
+                    "count": row.count,
+                    "previous_count": row.previous_count,
+                    "delta": row.delta,
+                    "delta_percent": row.delta_percent,
+                }
+                for row in skill_rows
+            ],
+            "salary_trend": [
+                {
+                    "week_start": row.week_start.isoformat(),
+                    "posting_count": row.posting_count,
+                    "average_annualized_midpoint": (
+                        row.average_annualized_midpoint
+                    ),
+                }
+                for row in salary_rows
+            ],
+            "posting_velocity": [
+                {
+                    "week_start": row.week_start.isoformat(),
+                    "new_posting_count": row.new_posting_count,
+                    "closed_posting_count": row.closed_posting_count,
+                }
+                for row in velocity_rows
+            ],
+            "company_hiring_velocity": [
+                {
+                    "week_start": row.week_start.isoformat(),
+                    "company_id": row.company_id,
+                    "company_name": row.company_name,
+                    "new_posting_count": row.new_posting_count,
+                }
+                for row in company_velocity_rows
+            ],
+            "time_to_close": {
+                "posting_count": close_stats.posting_count,
+                "median_days": close_stats.median_days,
+                "p75_days": close_stats.p75_days,
+            },
+            "caveat": (
+                "Trend quality depends on repeated scheduled ingestion. "
+                "Sparse observation history may produce flat or empty charts."
+            ),
+        }
+        return _wrapped(
+            session,
+            data,
+            applied_filters={
+                "weeks": weeks,
+                "skill": selected_skill,
+                "role_family": role_family,
+            },
+            sample_size=len(velocity_rows),
+            missing_data_counts=_missing_counts(session),
+        )
+
+    @app.get("/api/v1/analytics/trends/skills/{skill_name}")
+    def skill_trend(
+        skill_name: str,
+        weeks: int = Query(default=12, ge=1, le=52),
+        session: Session = Depends(get_session),
+    ) -> dict[str, Any]:
+        rows = skill_demand_over_time(
+            session,
+            skill_name=skill_name,
+            weeks=weeks,
+        )
+        data = {
+            "skill_name": skill_name,
+            "weeks": weeks,
+            "items": [
+                {
+                    "week_start": row.week_start.isoformat(),
+                    "count": row.count,
+                    "previous_count": row.previous_count,
+                    "delta": row.delta,
+                    "delta_percent": row.delta_percent,
+                }
+                for row in rows
+            ],
+        }
+        return _wrapped(
+            session,
+            data,
+            applied_filters={"skill_name": skill_name, "weeks": weeks},
+            sample_size=len(rows),
+        )
+
+    @app.get("/api/v1/analytics/trends/salary/{family_id}")
+    def salary_trend(
+        family_id: str,
+        weeks: int = Query(default=12, ge=1, le=52),
+        session: Session = Depends(get_session),
+    ) -> dict[str, Any]:
+        if not _is_supported_role_family_id(family_id):
+            raise HTTPException(status_code=404, detail="Role family not found")
+        rows = salary_trend_over_time(
+            session,
+            family_id=family_id,
+            weeks=weeks,
+        )
+        data = {
+            "role_family": family_id,
+            "role_family_label": _role_family_label(family_id),
+            "weeks": weeks,
+            "items": [
+                {
+                    "week_start": row.week_start.isoformat(),
+                    "posting_count": row.posting_count,
+                    "average_annualized_midpoint": row.average_annualized_midpoint,
+                }
+                for row in rows
+            ],
+        }
+        return _wrapped(
+            session,
+            data,
+            applied_filters={"family_id": family_id, "weeks": weeks},
+            sample_size=len(rows),
+        )
+
+    @app.get("/api/v1/analytics/trends/velocity")
+    def velocity_trend(
+        weeks: int = Query(default=12, ge=1, le=52),
+        role_family: str | None = None,
+        session: Session = Depends(get_session),
+    ) -> dict[str, Any]:
+        if role_family and not _is_supported_role_family_id(role_family):
+            raise HTTPException(status_code=422, detail="Unsupported role_family")
+        rows = posting_velocity(
+            session,
+            family_id=role_family,
+            weeks=weeks,
+        )
+        data = {
+            "weeks": weeks,
+            "role_family": role_family,
+            "items": [
+                {
+                    "week_start": row.week_start.isoformat(),
+                    "new_posting_count": row.new_posting_count,
+                    "closed_posting_count": row.closed_posting_count,
+                }
+                for row in rows
+            ],
+        }
+        return _wrapped(
+            session,
+            data,
+            applied_filters={"weeks": weeks, "role_family": role_family},
+            sample_size=len(rows),
+        )
+
+    @app.get("/api/v1/analytics/trends/company-velocity")
+    def company_velocity_trend(
+        weeks: int = Query(default=12, ge=1, le=52),
+        role_family: str | None = None,
+        limit: int = Query(default=50, ge=1, le=200),
+        session: Session = Depends(get_session),
+    ) -> dict[str, Any]:
+        if role_family and not _is_supported_role_family_id(role_family):
+            raise HTTPException(status_code=422, detail="Unsupported role_family")
+        rows = company_hiring_velocity(
+            session,
+            family_id=role_family,
+            weeks=weeks,
+            limit=limit,
+        )
+        data = {
+            "weeks": weeks,
+            "role_family": role_family,
+            "items": [
+                {
+                    "week_start": row.week_start.isoformat(),
+                    "company_id": row.company_id,
+                    "company_name": row.company_name,
+                    "new_posting_count": row.new_posting_count,
+                }
+                for row in rows
+            ],
+        }
+        return _wrapped(
+            session,
+            data,
+            applied_filters={
+                "weeks": weeks,
+                "role_family": role_family,
+                "limit": limit,
+            },
+            sample_size=len(rows),
         )
 
     @app.get("/api/v1/jobs")
@@ -839,6 +1165,25 @@ def _is_supported_role_family_id(role_family_id: str) -> bool:
 def _role_family_label(role_family_id: str | None) -> str | None:
     role = canonical_role_family_by_id(role_family_id)
     return role.label if role is not None else None
+
+
+def _selected_trend_skill(
+    session: Session,
+    *,
+    skill: str | None,
+    role_family: str | None,
+) -> str | None:
+    explicit_skill = _non_empty_string(skill)
+    if explicit_skill is not None:
+        return explicit_skill
+
+    if role_family:
+        role_row = role_family_detail(session, family_id=role_family, days=None)
+        if role_row is not None and role_row.top_skills:
+            return role_row.top_skills[0][0]
+
+    top_skill = next(iter(top_skills(session, days=None, limit=1)), None)
+    return top_skill.skill_name if top_skill is not None else None
 
 
 def _bounded_int(
@@ -1447,6 +1792,56 @@ def _salary_coverage_payload(row: Any) -> dict[str, Any]:
         "total_posting_count": row.total_posting_count,
         "salary_posting_count": row.salary_posting_count,
         "disclosure_rate": row.disclosure_rate,
+    }
+
+
+def _active_listings_summary_payload(row: Any) -> dict[str, Any]:
+    return {
+        "active_listing_count": row.active_listing_count,
+        "new_listing_count_7d": row.new_listing_count_7d,
+        "new_listing_count_30d": row.new_listing_count_30d,
+        "company_count": row.company_count,
+        "role_family_count": row.role_family_count,
+    }
+
+
+def _company_demand_signal_payload(row: Any) -> dict[str, Any]:
+    return {
+        "company_name": row.company_name,
+        "active_listing_count": row.active_listing_count,
+        "new_listing_count_7d": row.new_listing_count_7d,
+        "new_listing_count_30d": row.new_listing_count_30d,
+        "previous_new_listing_count_7d": row.previous_new_listing_count_7d,
+        "week_over_week_new_listing_delta": row.week_over_week_new_listing_delta,
+        "role_family_count": row.role_family_count,
+        "top_role_families": [
+            {"role_family": role_family, "listing_count": listing_count}
+            for role_family, listing_count in row.top_role_families
+        ],
+        "salary_disclosure_rate": row.salary_disclosure_rate,
+    }
+
+
+def _company_role_family_demand_payload(row: Any) -> dict[str, Any]:
+    return {
+        "company_name": row.company_name,
+        "role_family_id": row.role_family_id,
+        "role_family_label": row.role_family_label,
+        "active_listing_count": row.active_listing_count,
+    }
+
+
+def _new_listings_by_company_payload(row: Any) -> dict[str, Any]:
+    return {
+        "company_name": row.company_name,
+        "new_listing_count": row.new_listing_count,
+    }
+
+
+def _company_hiring_breadth_payload(row: Any) -> dict[str, Any]:
+    return {
+        "company_name": row.company_name,
+        "role_family_count": row.role_family_count,
     }
 
 

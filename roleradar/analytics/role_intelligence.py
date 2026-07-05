@@ -5,14 +5,19 @@ from __future__ import annotations
 import re
 from collections import Counter
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from statistics import mean
 
-from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
+from roleradar.analytics.queries import (
+    active_jobs as _active_jobs,
+)
+from roleradar.analytics.queries import (
+    active_source_listings as _active_source_listings,
+)
 from roleradar.analytics.salary_trends import annualized_salary_midpoint
-from roleradar.storage.models import Job, PostingObservation, SourceListing
+from roleradar.storage.models import Job, SourceListing
 
 
 @dataclass(frozen=True)
@@ -598,53 +603,6 @@ class _HiringCompanyAggregate:
             self.latest_seen_at = value
 
 
-def _active_jobs(session: Session, *, days: int | None) -> list[Job]:
-    query = select(Job).where(Job.closed_at.is_(None))
-    if days is not None:
-        query = query.where(Job.last_seen_at >= _cutoff(days))
-    return list(session.scalars(query).unique().all())
-
-
-def _active_source_listings(
-    session: Session,
-    *,
-    days: int | None = None,
-) -> list[SourceListing]:
-    latest_observation = (
-        select(
-            PostingObservation.source_listing_id.label("source_listing_id"),
-            func.max(PostingObservation.observed_at).label("observed_at"),
-        )
-        .group_by(PostingObservation.source_listing_id)
-        .subquery()
-    )
-    query = (
-        select(SourceListing)
-        .join(Job, Job.id == SourceListing.job_id)
-        .outerjoin(
-            latest_observation,
-            latest_observation.c.source_listing_id == SourceListing.id,
-        )
-        .outerjoin(
-            PostingObservation,
-            and_(
-                PostingObservation.source_listing_id == SourceListing.id,
-                PostingObservation.observed_at == latest_observation.c.observed_at,
-            ),
-        )
-        .where(
-            Job.closed_at.is_(None),
-            or_(
-                PostingObservation.id.is_(None),
-                PostingObservation.is_active.is_(True),
-            ),
-        )
-    )
-    if days is not None:
-        query = query.where(SourceListing.last_seen_at >= _cutoff(days))
-    return list(session.scalars(query).unique().all())
-
-
 def _company_name_for_job(job: Job, listings: list[SourceListing]) -> str:
     if job.company is not None and job.company.name.strip():
         return job.company.name.strip()
@@ -652,10 +610,6 @@ def _company_name_for_job(job: Job, listings: list[SourceListing]) -> str:
         if listing.source_company_name and listing.source_company_name.strip():
             return listing.source_company_name.strip()
     return "UNKNOWN"
-
-
-def _cutoff(days: int) -> datetime:
-    return datetime.now(UTC) - timedelta(days=days)
 
 
 def _normalize_title(value: str) -> str:

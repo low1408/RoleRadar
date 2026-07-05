@@ -1,8 +1,11 @@
+from pathlib import Path
+
 from click.testing import CliRunner
 from sqlalchemy import inspect
 
 from roleradar.analytics.skill_matcher import extract_and_persist_job_skills
 from roleradar.app.cli import cli
+from roleradar.ingestion.fetch_jobs import IngestionResult
 from roleradar.storage.database import (
     create_database_engine,
     create_session_factory,
@@ -54,6 +57,7 @@ def test_ingest_help_lists_adzuna_source() -> None:
     assert "--query" in result.output
     assert "--location" in result.output
     assert "--max-pages" in result.output
+    assert "--role-family" in result.output
 
 
 def test_adzuna_ingest_requires_query_and_location() -> None:
@@ -68,6 +72,91 @@ def test_jobstreet_ingest_requires_query_and_location() -> None:
 
     assert result.exit_code != 0
     assert "Jobstreet ingestion requires --query and --location" in result.output
+
+
+def test_ingest_command_passes_role_family_to_ingestion(monkeypatch) -> None:
+    calls = []
+
+    def fake_ingest_jobs(**kwargs):
+        calls.append(kwargs)
+        return IngestionResult(
+            source=kwargs["source"],
+            targets_seen=1,
+            targets_ingested=1,
+            targets_failed=0,
+            jobs_seen=1,
+            source_listings_upserted=1,
+            observations_created=1,
+            job_skills_extracted=0,
+            duplicate_candidates=0,
+        )
+
+    monkeypatch.setattr("roleradar.app.cli.ingest_jobs", fake_ingest_jobs)
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "ingest",
+            "--source",
+            "careers_gov",
+            "--query",
+            "data engineer",
+            "--role-family",
+            "data_engineer",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert calls[0]["role_family_id"] == "data_engineer"
+
+
+def test_ingest_command_normalizes_custom_role_family(monkeypatch) -> None:
+    calls = []
+
+    def fake_ingest_jobs(**kwargs):
+        calls.append(kwargs)
+        return IngestionResult(
+            source=kwargs["source"],
+            targets_seen=1,
+            targets_ingested=1,
+            targets_failed=0,
+            jobs_seen=1,
+            source_listings_upserted=1,
+            observations_created=1,
+            job_skills_extracted=0,
+            duplicate_candidates=0,
+        )
+
+    monkeypatch.setattr("roleradar.app.cli.ingest_jobs", fake_ingest_jobs)
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "ingest",
+            "--source",
+            "careers_gov",
+            "--query",
+            "data platform",
+            "--role-family",
+            "custom:Data Platform",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert calls[0]["role_family_id"] == "custom:data_platform"
+
+
+def test_scheduled_ingest_active_targets_are_careers_gov_only() -> None:
+    script = Path("scheduled_ingest.sh").read_text(encoding="utf-8")
+    active_targets = [
+        line.strip()
+        for line in script.splitlines()
+        if line.strip().startswith('"') and "|" in line
+    ]
+
+    assert active_targets
+    assert all(line.startswith('"careers_gov|') for line in active_targets)
+    assert '# "jobstreet|AI engineer' in script
 
 
 def test_sync_taxonomy_missing_credentials_skips(tmp_path) -> None:

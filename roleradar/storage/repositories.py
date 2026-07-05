@@ -173,6 +173,8 @@ class JobRepository:
 
         listing.ingestion_run = ingestion_run
         listing.job = job or listing.job
+        if listing.job is not None and listing.job.closed_at is not None:
+            listing.job.closed_at = None
         listing.canonical_url = canonical_url
         listing.source_url = source_url
         listing.source_company_name = source_company_name

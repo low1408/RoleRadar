@@ -59,6 +59,9 @@ def test_salary_range_summaries_group_employer_provided_ranges(tmp_path) -> None
         assert summaries[0].min_salary == 6000
         assert summaries[0].max_salary == 9000
         assert summaries[0].average_annualized_midpoint == 90000
+        assert summaries[0].p25_annualized_midpoint == 87000
+        assert summaries[0].median_annualized_midpoint == 90000
+        assert summaries[0].p75_annualized_midpoint == 93000
 
 
 def test_salary_range_summaries_do_not_treat_open_bounds_as_midpoints(

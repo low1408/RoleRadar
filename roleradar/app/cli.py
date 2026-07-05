@@ -5,6 +5,10 @@ from __future__ import annotations
 import click
 
 from roleradar import __version__
+from roleradar.analytics.role_intelligence import (
+    canonical_role_family_by_id,
+    custom_role_family_id,
+)
 from roleradar.analytics.salary_trends import (
     salary_by_company,
     salary_by_role_keyword,
@@ -197,6 +201,13 @@ def sync_taxonomy(source: str) -> None:
     type=click.IntRange(min=1),
     help="Maximum API pages to fetch.",
 )
+@click.option(
+    "--role-family",
+    help=(
+        "Role family id to assign to ingested jobs "
+        "(for example: data_engineer, software_engineer, ai_ml_engineer)."
+    ),
+)
 def ingest(
     source: str,
     targets_file: str | None,
@@ -205,9 +216,11 @@ def ingest(
     country: str,
     results_per_page: int,
     max_pages: int,
+    role_family: str | None,
 ) -> None:
     """Ingest jobs from a configured source."""
     settings = Settings()
+    role_family_id = _normalize_role_family_id(role_family)
     if source == "adzuna":
         if not query or not location:
             raise click.UsageError("Adzuna ingestion requires --query and --location.")
@@ -230,6 +243,7 @@ def ingest(
         country=country,
         results_per_page=results_per_page,
         max_pages=max_pages,
+        role_family_id=role_family_id,
         adzuna_app_id=settings.adzuna_app_id,
         adzuna_app_key=settings.adzuna_app_key,
         careers_gov_timeout_seconds=settings.careers_gov_timeout_seconds,
@@ -252,6 +266,25 @@ def ingest(
     )
     if result.error_message:
         click.echo(f"error: {result.error_message}")
+
+
+def _normalize_role_family_id(value: str | None) -> str | None:
+    """Return a canonical/custom role-family id accepted by ingestion."""
+    role_family_id = (value or "").strip()
+    if not role_family_id:
+        return None
+    if canonical_role_family_by_id(role_family_id) is not None:
+        return role_family_id
+
+    custom_label = (
+        role_family_id.removeprefix("custom:")
+        if role_family_id.startswith("custom:")
+        else role_family_id
+    )
+    custom_id = custom_role_family_id(custom_label)
+    if custom_id is not None:
+        return custom_id
+    raise click.UsageError(f"Unsupported role family: {value}")
 
 
 @cli.group("report")
