@@ -19,10 +19,28 @@ set -o pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PYTHON_BIN="${ROLERADAR_PYTHON:-$HOME/venvs/roleradar/bin/python}"
 RESULTS_PER_PAGE="${ROLERADAR_RESULTS_PER_PAGE:-20}"
-MAX_PAGES="${ROLERADAR_MAX_PAGES:-1}"
 DEFAULT_LOCATION="${ROLERADAR_LOCATION:-Singapore}"
 
 cd "$ROOT_DIR"
+
+# 1. Prevent concurrent runs using flock
+mkdir -p data
+exec 9>"data/ingest.lock"
+if ! flock -n 9; then
+  echo "[$(date -Is)] RoleRadar ingestion is already running. Exiting." >&2
+  exit 1
+fi
+
+# 2. Dual-Mode: Sunday deep sync (5 pages), weekdays shallow sync (1 page)
+DOW=$(date +%u)
+if [[ "${ROLERADAR_MAX_PAGES:-}" -gt 0 ]]; then
+  MAX_PAGES="$ROLERADAR_MAX_PAGES"
+elif [[ "$DOW" -eq 7 ]]; then
+  echo "[$(date -Is)] Sunday deep sync triggered (fetching up to 5 pages)"
+  MAX_PAGES=5
+else
+  MAX_PAGES=1
+fi
 
 if [[ ! -x "$PYTHON_BIN" ]]; then
   echo "Python venv not found or not executable: $PYTHON_BIN" >&2
@@ -83,7 +101,14 @@ done
 
 if [[ "$failures" -gt 0 ]]; then
   echo "[$(date -Is)] scheduled RoleRadar ingestion completed with $failures failure(s)" >&2
+  # Send desktop notification on failure if in a desktop session
+  if command -v notify-send >/dev/null 2>&1; then
+    notify-send "RoleRadar Ingestion Failed" "Scheduled job ingestion encountered $failures failure(s). Check scheduled_ingest.log for details." --icon=dialog-error
+  fi
   exit 1
 fi
 
 echo "[$(date -Is)] scheduled RoleRadar ingestion completed successfully"
+if command -v notify-send >/dev/null 2>&1; then
+  notify-send "RoleRadar Ingestion Successful" "Job listings have been loaded and updated." --icon=dialog-information
+fi

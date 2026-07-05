@@ -330,3 +330,19 @@ class DuplicateAuditLog(Base):
     duplicate_candidate: Mapped[DuplicateJobCandidate] = relationship(
         back_populates="audit_logs"
     )
+
+
+class DeletedListing(Base):
+    """Recycle bin record containing serialized source listing data."""
+
+    __tablename__ = "deleted_listings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    source_listing_id: Mapped[int] = mapped_column(Integer, unique=True, index=True)
+    deleted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+        index=True,
+    )
+    payload: Mapped[dict] = mapped_column(JSON)
+

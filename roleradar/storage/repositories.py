@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from roleradar.ingestion.normalize_jobs import extract_job_description_sections
 from roleradar.storage.models import (
     Company,
+    DeletedListing,
     DuplicateAuditLog,
     DuplicateJobCandidate,
     IngestionRun,
@@ -420,6 +421,265 @@ class JobRepository:
             "moved_job_skill_ids": moved_job_skill_ids,
             "removed_job_skill_ids": removed_job_skill_ids,
         }
+
+    def delete_source_listing(self, listing: SourceListing) -> None:
+        """Move a source listing and its relations to the recycle bin, then delete them."""
+        job = listing.job
+        job_deleted = False
+        duplicates = []
+        if job is not None:
+            remaining = self.session.scalars(
+                select(SourceListing).where(
+                    SourceListing.job_id == job.id,
+                    SourceListing.id != listing.id
+                )
+            ).all()
+            if not remaining:
+                job_deleted = True
+                duplicates = self.session.scalars(
+                    select(DuplicateJobCandidate).where(
+                        (DuplicateJobCandidate.job_id == job.id) |
+                        (DuplicateJobCandidate.candidate_job_id == job.id)
+                    )
+                ).all()
+
+        payload = {
+            "source_listing": {
+                "id": listing.id,
+                "ingestion_run_id": listing.ingestion_run_id,
+                "job_id": listing.job_id,
+                "source": listing.source,
+                "source_job_id": listing.source_job_id,
+                "canonical_url": listing.canonical_url,
+                "source_url": listing.source_url,
+                "source_company_name": listing.source_company_name,
+                "source_title": listing.source_title,
+                "location": listing.location,
+                "workplace_type": listing.workplace_type,
+                "description_text": listing.description_text,
+                "text_quality": listing.text_quality,
+                "salary_min": listing.salary_min,
+                "salary_max": listing.salary_max,
+                "salary_currency": listing.salary_currency,
+                "salary_interval": listing.salary_interval,
+                "content_hash": listing.content_hash,
+                "raw_payload": listing.raw_payload,
+                "first_seen_at": listing.first_seen_at.isoformat() if listing.first_seen_at else None,
+                "last_seen_at": listing.last_seen_at.isoformat() if listing.last_seen_at else None,
+                "source_updated_at": listing.source_updated_at.isoformat() if listing.source_updated_at else None,
+            },
+            "observations": [
+                {
+                    "id": obs.id,
+                    "ingestion_run_id": obs.ingestion_run_id,
+                    "observed_at": obs.observed_at.isoformat() if obs.observed_at else None,
+                    "is_active": obs.is_active,
+                    "content_hash": obs.content_hash,
+                    "raw_payload": obs.raw_payload,
+                    "source_updated_at": obs.source_updated_at.isoformat() if obs.source_updated_at else None,
+                }
+                for obs in listing.observations
+            ],
+            "job_deleted": job_deleted,
+        }
+
+        if job_deleted:
+            payload["job"] = {
+                "id": job.id,
+                "company_id": job.company_id,
+                "title": job.title,
+                "normalized_title": job.normalized_title,
+                "role_family_id": job.role_family_id,
+                "canonical_url": job.canonical_url,
+                "location": job.location,
+                "workplace_type": job.workplace_type,
+                "description_text": job.description_text,
+                "content_hash": job.content_hash,
+                "first_seen_at": job.first_seen_at.isoformat() if job.first_seen_at else None,
+                "last_seen_at": job.last_seen_at.isoformat() if job.last_seen_at else None,
+                "closed_at": job.closed_at.isoformat() if job.closed_at else None,
+                "raw_payload": job.raw_payload,
+            }
+            payload["job_skills"] = [
+                {
+                    "id": js.id,
+                    "job_id": js.job_id,
+                    "skill_id": js.skill_id,
+                    "extraction_method": js.extraction_method,
+                    "confidence": js.confidence,
+                    "matched_text": js.matched_text,
+                    "created_at": js.created_at.isoformat() if js.created_at else None,
+                }
+                for js in job.job_skills
+            ]
+            payload["duplicate_candidates"] = [
+                {
+                    "id": dc.id,
+                    "job_id": dc.job_id,
+                    "candidate_job_id": dc.candidate_job_id,
+                    "match_type": dc.match_type,
+                    "score": dc.score,
+                    "reason": dc.reason,
+                    "status": dc.status,
+                    "created_at": dc.created_at.isoformat() if dc.created_at else None,
+                    "audit_logs": [
+                        {
+                            "id": al.id,
+                            "duplicate_candidate_id": al.duplicate_candidate_id,
+                            "action": al.action,
+                            "actor": al.actor,
+                            "reason": al.reason,
+                            "previous_status": al.previous_status,
+                            "new_status": al.new_status,
+                            "payload": al.payload,
+                            "created_at": al.created_at.isoformat() if al.created_at else None,
+                        }
+                        for al in dc.audit_logs
+                    ]
+                }
+                for dc in duplicates
+            ]
+
+        deleted_listing = DeletedListing(
+            source_listing_id=listing.id,
+            payload=payload
+        )
+        self.session.add(deleted_listing)
+        self.session.flush()
+
+        for observation in list(listing.observations):
+            self.session.delete(observation)
+
+        self.session.delete(listing)
+        self.session.flush()
+
+        if job_deleted:
+            for job_skill in list(job.job_skills):
+                self.session.delete(job_skill)
+            for duplicate in duplicates:
+                for audit_log in list(duplicate.audit_logs):
+                    self.session.delete(audit_log)
+                self.session.delete(duplicate)
+            self.session.delete(job)
+
+        self.session.flush()
+
+    def restore_source_listing(self, source_listing_id: int) -> SourceListing:
+        """Restore a source listing and its relations from the recycle bin."""
+        deleted_record = self.session.scalar(
+            select(DeletedListing).where(DeletedListing.source_listing_id == source_listing_id)
+        )
+        if deleted_record is None:
+            raise ValueError("Listing not found in recycle bin")
+
+        payload = deleted_record.payload
+
+        if payload.get("job_deleted"):
+            job_data = payload["job"]
+            job = Job(
+                id=job_data["id"],
+                company_id=job_data["company_id"],
+                title=job_data["title"],
+                normalized_title=job_data["normalized_title"],
+                role_family_id=job_data["role_family_id"],
+                canonical_url=job_data["canonical_url"],
+                location=job_data["location"],
+                workplace_type=job_data["workplace_type"],
+                description_text=job_data["description_text"],
+                content_hash=job_data["content_hash"],
+                first_seen_at=datetime.fromisoformat(job_data["first_seen_at"]) if job_data["first_seen_at"] else None,
+                last_seen_at=datetime.fromisoformat(job_data["last_seen_at"]) if job_data["last_seen_at"] else None,
+                closed_at=datetime.fromisoformat(job_data["closed_at"]) if job_data["closed_at"] else None,
+                raw_payload=job_data["raw_payload"],
+            )
+            self.session.add(job)
+            self.session.flush()
+
+            for js_data in payload.get("job_skills", []):
+                js = JobSkill(
+                    id=js_data["id"],
+                    job_id=js_data["job_id"],
+                    skill_id=js_data["skill_id"],
+                    extraction_method=js_data["extraction_method"],
+                    confidence=js_data["confidence"],
+                    matched_text=js_data["matched_text"],
+                    created_at=datetime.fromisoformat(js_data["created_at"]) if js_data["created_at"] else None,
+                )
+                self.session.add(js)
+
+            for dc_data in payload.get("duplicate_candidates", []):
+                dc = DuplicateJobCandidate(
+                    id=dc_data["id"],
+                    job_id=dc_data["job_id"],
+                    candidate_job_id=dc_data["candidate_job_id"],
+                    match_type=dc_data["match_type"],
+                    score=dc_data["score"],
+                    reason=dc_data["reason"],
+                    status=dc_data["status"],
+                    created_at=datetime.fromisoformat(dc_data["created_at"]) if dc_data["created_at"] else None,
+                )
+                self.session.add(dc)
+                self.session.flush()
+
+                for al_data in dc_data.get("audit_logs", []):
+                    al = DuplicateAuditLog(
+                        id=al_data["id"],
+                        duplicate_candidate_id=al_data["duplicate_candidate_id"],
+                        action=al_data["action"],
+                        actor=al_data["actor"],
+                        reason=al_data["reason"],
+                        previous_status=al_data["previous_status"],
+                        new_status=al_data["new_status"],
+                        payload=al_data["payload"],
+                        created_at=datetime.fromisoformat(al_data["created_at"]) if al_data["created_at"] else None,
+                    )
+                    self.session.add(al)
+
+        sl_data = payload["source_listing"]
+        listing = SourceListing(
+            id=sl_data["id"],
+            ingestion_run_id=sl_data["ingestion_run_id"],
+            job_id=sl_data["job_id"],
+            source=sl_data["source"],
+            source_job_id=sl_data["source_job_id"],
+            canonical_url=sl_data["canonical_url"],
+            source_url=sl_data["source_url"],
+            source_company_name=sl_data["source_company_name"],
+            source_title=sl_data["source_title"],
+            location=sl_data["location"],
+            workplace_type=sl_data["workplace_type"],
+            description_text=sl_data["description_text"],
+            text_quality=sl_data["text_quality"],
+            salary_min=sl_data["salary_min"],
+            salary_max=sl_data["salary_max"],
+            salary_currency=sl_data["salary_currency"],
+            salary_interval=sl_data["salary_interval"],
+            content_hash=sl_data["content_hash"],
+            raw_payload=sl_data["raw_payload"],
+            first_seen_at=datetime.fromisoformat(sl_data["first_seen_at"]) if sl_data["first_seen_at"] else None,
+            last_seen_at=datetime.fromisoformat(sl_data["last_seen_at"]) if sl_data["last_seen_at"] else None,
+            source_updated_at=datetime.fromisoformat(sl_data["source_updated_at"]) if sl_data["source_updated_at"] else None,
+        )
+        self.session.add(listing)
+        self.session.flush()
+
+        for obs_data in payload.get("observations", []):
+            obs = PostingObservation(
+                id=obs_data["id"],
+                source_listing_id=listing.id,
+                ingestion_run_id=obs_data["ingestion_run_id"],
+                observed_at=datetime.fromisoformat(obs_data["observed_at"]) if obs_data["observed_at"] else None,
+                is_active=obs_data["is_active"],
+                content_hash=obs_data["content_hash"],
+                raw_payload=obs_data["raw_payload"],
+                source_updated_at=datetime.fromisoformat(obs_data["source_updated_at"]) if obs_data["source_updated_at"] else None,
+            )
+            self.session.add(obs)
+
+        self.session.delete(deleted_record)
+        self.session.flush()
+
+        return listing
 
 
 class SkillRepository:

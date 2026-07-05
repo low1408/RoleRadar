@@ -662,6 +662,88 @@ def test_role_family_endpoint_returns_canonical_role_summary(tmp_path) -> None:
     assert payload["data"]["items"][0]["top_skills"][0]["skill_name"] == "Python"
 
 
+def test_delete_and_restore_listing_via_endpoints(tmp_path) -> None:
+    app = _seed_app(tmp_path, duplicate=True)
+    delete_endpoint = _endpoint(app, "/api/v1/jobs/{source_listing_id}", method="DELETE")
+    restore_endpoint = _endpoint(app, "/api/v1/jobs/{source_listing_id}/restore", method="POST")
+    list_deleted_endpoint = _endpoint(app, "/api/v1/admin/deleted-listings")
+
+    # Fetch initial source listing ID
+    with app.state.session_factory() as session:
+        listing = session.scalars(select(SourceListing)).first()
+        listing_id = listing.id
+        job_id = listing.job_id
+
+    # 1. Delete listing
+    with app.state.session_factory() as session:
+        delete_response = delete_endpoint(source_listing_id=listing_id, session=session)
+        session.commit()
+
+    assert delete_response["status"] == "ok"
+    assert delete_response["deleted_source_listing_id"] == listing_id
+
+    # Verify listing is removed from active listings
+    with app.state.session_factory() as session:
+        active_listing = session.scalar(select(SourceListing).where(SourceListing.id == listing_id))
+        assert active_listing is None
+
+    # Verify listing is in the recycle bin
+    with app.state.session_factory() as session:
+        deleted_list = list_deleted_endpoint(session=session)
+        assert len(deleted_list["data"]["items"]) == 1
+        assert deleted_list["data"]["items"][0]["source_listing_id"] == listing_id
+
+    # 2. Restore listing
+    with app.state.session_factory() as session:
+        restore_response = restore_endpoint(source_listing_id=listing_id, session=session)
+        session.commit()
+
+    assert restore_response["status"] == "ok"
+    assert restore_response["restored_source_listing_id"] == listing_id
+
+    # Verify listing and relations are restored correctly
+    with app.state.session_factory() as session:
+        restored_listing = session.scalar(select(SourceListing).where(SourceListing.id == listing_id))
+        assert restored_listing is not None
+        assert restored_listing.job_id == job_id
+        # Verify recycle bin is empty now
+        deleted_list = list_deleted_endpoint(session=session)
+        assert len(deleted_list["data"]["items"]) == 0
+
+
+def test_deleted_listing_auto_cleanup(tmp_path) -> None:
+    from datetime import datetime, UTC, timedelta
+    from roleradar.storage.models import DeletedListing
+
+    app = _seed_app(tmp_path)
+    list_deleted_endpoint = _endpoint(app, "/api/v1/admin/deleted-listings")
+
+    with app.state.session_factory() as session:
+        # Create an old deleted listing manually
+        old_deleted = DeletedListing(
+            source_listing_id=999,
+            deleted_at=datetime.now(UTC) - timedelta(days=3),
+            payload={"source_listing": {"source_title": "Old job", "source_company_name": "Old Corp", "source": "lever"}}
+        )
+        # Create a new deleted listing manually
+        new_deleted = DeletedListing(
+            source_listing_id=888,
+            deleted_at=datetime.now(UTC) - timedelta(hours=1),
+            payload={"source_listing": {"source_title": "New job", "source_company_name": "New Corp", "source": "lever"}}
+        )
+        session.add_all([old_deleted, new_deleted])
+        session.commit()
+
+    # Query list_deleted_endpoint, which triggers _cleanup_old_deleted_listings
+    with app.state.session_factory() as session:
+        res = list_deleted_endpoint(session=session)
+        session.commit()
+
+    # Verify only the new listing remains
+    assert len(res["data"]["items"]) == 1
+    assert res["data"]["items"][0]["source_listing_id"] == 888
+
+
 def _seed_app(tmp_path, *, duplicate: bool = False):
     database_url = f"sqlite:///{tmp_path / 'server.sqlite3'}"
     app = create_app(Settings(database_url=database_url))

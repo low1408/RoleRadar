@@ -48,22 +48,36 @@ class CareersGovClient:
         search_query = query or ""
 
         for page in range(max_pages):
-            try:
-                response = self.session.get(
-                    API_LINK,
-                    params={"limit": limit, "page": page, "search": search_query},
-                    headers={"mcf-client": "jobseeker"},
-                    timeout=self.timeout_seconds,
-                )
-                response.raise_for_status()
-            except requests.RequestException as exc:
-                self.logger.warning(
-                    "careers_gov.blocked",
-                    page=page,
-                    query=search_query,
-                    error=str(exc),
-                )
-                raise
+            max_retries = 3
+            backoff = 2.0
+            for attempt in range(max_retries):
+                try:
+                    response = self.session.get(
+                        API_LINK,
+                        params={"limit": limit, "page": page, "search": search_query},
+                        headers={"mcf-client": "jobseeker"},
+                        timeout=self.timeout_seconds,
+                    )
+                    response.raise_for_status()
+                    break
+                except requests.RequestException as exc:
+                    if attempt == max_retries - 1:
+                        self.logger.warning(
+                            "careers_gov.blocked",
+                            page=page,
+                            query=search_query,
+                            error=str(exc),
+                        )
+                        raise
+                    self.logger.info(
+                        "careers_gov.retry",
+                        page=page,
+                        query=search_query,
+                        attempt=attempt + 1,
+                        error=str(exc),
+                    )
+                    time.sleep(backoff)
+                    backoff *= 2
 
             payload = response.json()
             if not isinstance(payload, dict) or not isinstance(

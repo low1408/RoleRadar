@@ -66,6 +66,7 @@ from roleradar.storage.database import (
 )
 from roleradar.storage.models import (
     Company,
+    DeletedListing,
     DuplicateJobCandidate,
     IngestionRun,
     Job,
@@ -736,6 +737,37 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             sample_size=len(job.source_listings),
         )
 
+    @app.delete("/api/v1/jobs/{source_listing_id}")
+    def delete_job_listing(
+        source_listing_id: int,
+        session: Session = Depends(get_session),
+    ) -> dict[str, Any]:
+        listing = session.scalar(
+            select(SourceListing).where(SourceListing.id == source_listing_id)
+        )
+        if listing is None:
+            raise HTTPException(status_code=404, detail="Source listing not found")
+
+        _cleanup_old_deleted_listings(session)
+
+        repo = JobRepository(session)
+        repo.delete_source_listing(listing)
+        session.commit()
+        return {"status": "ok", "deleted_source_listing_id": source_listing_id}
+
+    @app.post("/api/v1/jobs/{source_listing_id}/restore")
+    def restore_job_listing(
+        source_listing_id: int,
+        session: Session = Depends(get_session),
+    ) -> dict[str, Any]:
+        repo = JobRepository(session)
+        try:
+            repo.restore_source_listing(source_listing_id)
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+        session.commit()
+        return {"status": "ok", "restored_source_listing_id": source_listing_id}
+
     @app.get("/api/v1/skills/{skill_id}")
     def get_skill(
         skill_id: int,
@@ -994,6 +1026,31 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 sample_size=source_listings,
             )
 
+    @app.get("/api/v1/admin/deleted-listings")
+    def list_deleted_listings(
+        session: Session = Depends(get_session),
+    ) -> dict[str, Any]:
+        _cleanup_old_deleted_listings(session)
+        session.commit()
+
+        rows = session.scalars(
+            select(DeletedListing).order_by(DeletedListing.deleted_at.desc())
+        ).all()
+        data = {
+            "items": [
+                {
+                    "id": row.id,
+                    "source_listing_id": row.source_listing_id,
+                    "deleted_at": _iso(row.deleted_at),
+                    "title": row.payload["source_listing"]["source_title"],
+                    "company_name": row.payload["source_listing"]["source_company_name"],
+                    "source": row.payload["source_listing"]["source"],
+                }
+                for row in rows
+            ]
+        }
+        return _wrapped(session, data, sample_size=len(rows))
+
     @app.get("/api/v1/admin/duplicates")
     def list_duplicates(
         limit: int = Query(default=20, ge=1, le=100),
@@ -1094,6 +1151,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if path and requested.is_file():
                 return FileResponse(requested)
             return FileResponse(static_dir / "index.html")
+
+    @app.on_event("startup")
+    def startup_cleanup() -> None:
+        with session_factory() as session:
+            _cleanup_old_deleted_listings(session)
+            session.commit()
 
     return app
 
@@ -1311,6 +1374,16 @@ def _frontend_ingestion_result(
         "duplicate_candidates": duplicate_candidates,
         "error_message": error_message,
     }
+
+
+def _cleanup_old_deleted_listings(session: Session) -> None:
+    from datetime import timedelta
+    cutoff = datetime.now(UTC) - timedelta(days=2)
+    old_listings = session.scalars(
+        select(DeletedListing).where(DeletedListing.deleted_at < cutoff)
+    ).all()
+    for row in old_listings:
+        session.delete(row)
 
 
 def _wrapped(

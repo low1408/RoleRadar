@@ -15,6 +15,7 @@ import {
   Search,
   ShieldCheck,
   Sun,
+  Trash2,
   TrendingUp,
   X,
 } from "lucide-react";
@@ -79,6 +80,46 @@ function App() {
   const [dark, setDark] = React.useState(
     window.localStorage.getItem("roleradar.theme") === "dark",
   );
+  const [refreshCounter, setRefreshCounter] = React.useState(0);
+  const [toasts, setToasts] = React.useState([]);
+
+  const showToast = (message, actionLabel = null, onAction = null) => {
+    const id = Math.random().toString(36).substring(2, 9);
+    const toast = { id, message, actionLabel, onAction };
+    setToasts((prev) => [...prev, toast]);
+    setTimeout(() => {
+      dismissToast(id);
+    }, 6000);
+  };
+
+  const dismissToast = (id) => {
+    setToasts((prev) => prev.filter((t) => t.id !== id));
+  };
+
+  const handleDeleteListing = async (item) => {
+    try {
+      await api(`/api/v1/jobs/${item.source_listing_id}`, { method: "DELETE" });
+      setRefreshCounter((prev) => prev + 1);
+      if (selected && selected.source_listing_id === item.source_listing_id) {
+        setSelected(null);
+      }
+      showToast(
+        `Deleted listing "${item.title}" at "${item.company_name}".`,
+        "Undo",
+        async () => {
+          try {
+            await api(`/api/v1/jobs/${item.source_listing_id}/restore`, { method: "POST" });
+            setRefreshCounter((prev) => prev + 1);
+            showToast("Restored listing successfully.");
+          } catch (err) {
+            showToast(`Failed to restore: ${err.message}`);
+          }
+        }
+      );
+    } catch (err) {
+      showToast(`Failed to delete: ${err.message}`);
+    }
+  };
   const routeSection = getRouteSection(route);
   const payloadKey = getPayloadKey(
     routeSection,
@@ -203,6 +244,7 @@ function App() {
     trendRoleFamily,
     trendSkill,
     trendWeeks,
+    refreshCounter,
   ]);
 
   const isLoadRoute = route.startsWith("#/load");
@@ -230,6 +272,7 @@ function App() {
             roleFamily={roleFamily}
             setRoleFamily={setRoleFamily}
             roleFamilies={roleFamilies}
+            onDelete={handleDeleteListing}
           />
         )}
         {viewPayload && route.startsWith("#/admin") && (
@@ -239,6 +282,9 @@ function App() {
               setPayload({ routeSection, key: payloadKey, response })
             }
             setSelected={setSelected}
+            refreshCounter={refreshCounter}
+            setRefreshCounter={setRefreshCounter}
+            showToast={showToast}
           />
         )}
         {viewPayload && route.startsWith("#/trends") && (
@@ -269,6 +315,7 @@ function App() {
           )}
       </main>
       <Inspector selected={selected} setSelected={setSelected} />
+      <ToastContainer toasts={toasts} onDismiss={dismissToast} />
     </div>
   );
 }
@@ -1536,6 +1583,7 @@ function JobsView({
   roleFamily,
   setRoleFamily,
   roleFamilies,
+  onDelete,
 }) {
   const rows = payload.data.items;
 
@@ -1583,6 +1631,7 @@ function JobsView({
                 <th>Structured sections</th>
                 <th>Salary</th>
                 <th>Last seen</th>
+                <th style={{ width: "48px" }}></th>
               </tr>
             </thead>
             <tbody>
@@ -1604,6 +1653,15 @@ function JobsView({
                     {item.last_seen_at
                       ? new Date(item.last_seen_at).toLocaleDateString()
                       : ""}
+                  </td>
+                  <td onClick={(event) => event.stopPropagation()}>
+                    <button
+                      className="icon-button delete-row-button"
+                      onClick={() => onDelete(item)}
+                      title="Delete Listing"
+                    >
+                      <Trash2 size={14} />
+                    </button>
                   </td>
                 </tr>
               ))}
@@ -1637,7 +1695,14 @@ function SectionBadges({ item }) {
   );
 }
 
-function AdminView({ payload, setPayload, setSelected }) {
+function AdminView({
+  payload,
+  setPayload,
+  setSelected,
+  refreshCounter,
+  setRefreshCounter,
+  showToast,
+}) {
   const rows = payload.data.items;
   const duplicateListingGroups =
     (payload.data.source_listing_duplicate_groups || 0) +
@@ -1645,6 +1710,29 @@ function AdminView({ payload, setPayload, setSelected }) {
   const [dedupeResult, setDedupeResult] = React.useState(null);
   const [dedupeError, setDedupeError] = React.useState(null);
   const [isDeduping, setIsDeduping] = React.useState(false);
+  const [deletedListings, setDeletedListings] = React.useState([]);
+
+  React.useEffect(() => {
+    let isCurrent = true;
+    api("/api/v1/admin/deleted-listings")
+      .then((res) => {
+        if (isCurrent) setDeletedListings(res.data.items || []);
+      })
+      .catch((err) => console.error("Failed to load deleted listings:", err));
+    return () => {
+      isCurrent = false;
+    };
+  }, [refreshCounter]);
+
+  const handleRestore = async (sourceListingId) => {
+    try {
+      await api(`/api/v1/jobs/${sourceListingId}/restore`, { method: "POST" });
+      setRefreshCounter((prev) => prev + 1);
+      showToast("Restored listing successfully.");
+    } catch (err) {
+      showToast(`Failed to restore: ${err.message}`);
+    }
+  };
 
   const runSourceListingDedupe = async () => {
     setDedupeError(null);
@@ -1762,6 +1850,48 @@ function AdminView({ payload, setPayload, setSelected }) {
           </div>
         </section>
       )}
+
+      <section className="panel" style={{ marginTop: "16px" }}>
+        <PanelHeader
+          title="Recycle Bin"
+          subtitle="Temporary storage for deleted listings (automatically cleared after 2 days)."
+        />
+        {!deletedListings.length ? (
+          <EmptyState text="Recycle bin is empty." />
+        ) : (
+          <div className="review-list">
+            {deletedListings.map((item) => (
+              <div
+                className="review-row"
+                key={item.source_listing_id}
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "minmax(0, 1fr) auto auto",
+                  alignItems: "center",
+                  gap: "12px",
+                  padding: "12px 0",
+                  borderBottom: "1px solid var(--border-main)",
+                }}
+              >
+                <span style={{ display: "grid", gap: "3px" }}>
+                  <strong>{item.title}</strong>
+                  <small>{item.company_name} · <span className="badge">{item.source}</span></small>
+                </span>
+                <span style={{ fontSize: "12px", color: "var(--text-soft)" }}>
+                  Deleted {formatAgo(item.deleted_at)}
+                </span>
+                <button
+                  className="action-button primary compact"
+                  onClick={() => handleRestore(item.source_listing_id)}
+                  style={{ minHeight: "28px", padding: "0 10px", fontSize: "12px" }}
+                >
+                  Restore
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
     </>
   );
 }
@@ -2096,6 +2226,33 @@ function structuredSectionEntries(item) {
       item.preferred_competencies_and_qualifications,
     ],
   ].filter(([, , value]) => Boolean(value));
+}
+
+function ToastContainer({ toasts, onDismiss }) {
+  if (!toasts.length) return null;
+  return (
+    <div className="toast-container">
+      {toasts.map((toast) => (
+        <div className="toast" key={toast.id}>
+          <span className="toast-message">{toast.message}</span>
+          {toast.actionLabel && (
+            <button
+              className="toast-action"
+              onClick={() => {
+                toast.onAction();
+                onDismiss(toast.id);
+              }}
+            >
+              {toast.actionLabel}
+            </button>
+          )}
+          <button className="toast-close" onClick={() => onDismiss(toast.id)}>
+            <X size={14} />
+          </button>
+        </div>
+      ))}
+    </div>
+  );
 }
 
 createRoot(document.getElementById("root")).render(<App />);

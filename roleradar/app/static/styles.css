@@ -824,7 +824,10 @@ tbody tr:hover {
 
 .inspector {
   display: none;
-  overflow: auto;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
   border-left: 1px solid var(--border-main);
   background: var(--bg-panel);
 }
