@@ -6,6 +6,8 @@ import {
   BarChart3,
   BriefcaseBusiness,
   Building2,
+  ChevronLeft,
+  ChevronRight,
   Database,
   Download,
   Gauge,
@@ -80,6 +82,9 @@ function App() {
   const [dark, setDark] = React.useState(
     window.localStorage.getItem("roleradar.theme") === "dark",
   );
+  const [sidebarCollapsed, setSidebarCollapsed] = React.useState(() => {
+    return window.localStorage.getItem("roleradar.sidebar") === "collapsed";
+  });
   const [refreshCounter, setRefreshCounter] = React.useState(0);
   const [toasts, setToasts] = React.useState([]);
 
@@ -145,6 +150,13 @@ function App() {
     document.body.classList.toggle("dark", dark);
     window.localStorage.setItem("roleradar.theme", dark ? "dark" : "light");
   }, [dark]);
+
+  React.useEffect(() => {
+    window.localStorage.setItem(
+      "roleradar.sidebar",
+      sidebarCollapsed ? "collapsed" : "expanded",
+    );
+  }, [sidebarCollapsed]);
 
   React.useEffect(() => {
     if (
@@ -250,13 +262,19 @@ function App() {
   const isLoadRoute = route.startsWith("#/load");
 
   return (
-    <div className={selected ? "app-shell inspector-open" : "app-shell"}>
+    <div
+      className={`app-shell ${selected ? "inspector-open" : ""} ${
+        sidebarCollapsed ? "sidebar-collapsed" : ""
+      }`}
+    >
       <Sidebar
         route={route}
         query={query}
         setQuery={setQuery}
         dark={dark}
         setDark={setDark}
+        collapsed={sidebarCollapsed}
+        setCollapsed={setSidebarCollapsed}
       />
       <main className="workspace">
         {error && <div className="notice error">{error}</div>}
@@ -320,9 +338,17 @@ function App() {
   );
 }
 
-function Sidebar({ route, query, setQuery, dark, setDark }) {
+function Sidebar({ route, query, setQuery, dark, setDark, collapsed, setCollapsed }) {
   return (
     <aside className="sidebar">
+      <button
+        className="sidebar-toggle"
+        onClick={() => setCollapsed(!collapsed)}
+        title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+      >
+        {collapsed ? <ChevronRight size={14} /> : <ChevronLeft size={14} />}
+      </button>
+
       <div className="brand-lockup">
         <div className="brand-mark">
           <Activity size={20} strokeWidth={2.3} />
@@ -694,7 +720,13 @@ function OverviewView({
       />
 
       <section className="analysis-grid">
-        <SkillChart rows={data.top_skills} roleFamily={selectedRole} />
+        <SkillChart
+          rows={data.top_skills || []}
+          roleFamily={selectedRole}
+          taxonomyCount={data.kpis.skills}
+          activeJobCount={data.kpis.canonical_jobs}
+          missingSkillCount={payload.meta?.missing_data_counts?.skills || 0}
+        />
         <HiringCompaniesPanel
           rows={data.top_hiring_companies || []}
           roleFamily={selectedRole}
@@ -1239,8 +1271,20 @@ function DemandSignalsPanel({ rows, setSelected }) {
   );
 }
 
-function SkillChart({ rows, roleFamily }) {
+function SkillChart({
+  rows = [],
+  roleFamily,
+  taxonomyCount = 0,
+  activeJobCount = 0,
+  missingSkillCount = 0,
+}) {
   const canvasRef = React.useRef(null);
+  const emptyText = skillChartEmptyText({
+    activeJobCount,
+    missingSkillCount,
+    roleFamily,
+    taxonomyCount,
+  });
 
   React.useEffect(() => {
     if (!canvasRef.current || !rows.length) return undefined;
@@ -1287,10 +1331,28 @@ function SkillChart({ rows, roleFamily }) {
           <canvas ref={canvasRef} />
         </div>
       ) : (
-        <EmptyState text="No job data detected. Run roleradar ingest or review Admin imports." />
+        <EmptyState text={emptyText} />
       )}
     </section>
   );
+}
+
+function skillChartEmptyText({
+  activeJobCount,
+  missingSkillCount,
+  roleFamily,
+  taxonomyCount,
+}) {
+  if (!activeJobCount) {
+    return "No job data detected. Run roleradar ingest or review Admin imports.";
+  }
+  if (!roleFamily && taxonomyCount === 0) {
+    return "No skill taxonomy loaded yet. Run seed-taxonomy.";
+  }
+  if (roleFamily || missingSkillCount > 0) {
+    return "No skills classified yet. Run classify-skills.";
+  }
+  return "No in-demand skills found for the current filters.";
 }
 
 function TrendsView({
