@@ -12,6 +12,7 @@
 #   ROLERADAR_RESULTS_PER_PAGE=50
 #   ROLERADAR_MAX_PAGES=2
 #   ROLERADAR_LOCATION=Singapore
+#   ROLERADAR_RETENTION_DAYS=30
 
 set -u
 set -o pipefail
@@ -20,6 +21,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PYTHON_BIN="${ROLERADAR_PYTHON:-$HOME/venvs/roleradar/bin/python}"
 RESULTS_PER_PAGE="${ROLERADAR_RESULTS_PER_PAGE:-20}"
 DEFAULT_LOCATION="${ROLERADAR_LOCATION:-Singapore}"
+RETENTION_DAYS="${ROLERADAR_RETENTION_DAYS:-30}"
 
 cd "$ROOT_DIR"
 
@@ -45,6 +47,11 @@ fi
 if [[ ! -x "$PYTHON_BIN" ]]; then
   echo "Python venv not found or not executable: $PYTHON_BIN" >&2
   echo "Set ROLERADAR_PYTHON=/path/to/python if your venv is elsewhere." >&2
+  exit 1
+fi
+
+if [[ ! "$RETENTION_DAYS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "ROLERADAR_RETENTION_DAYS must be a positive integer: $RETENTION_DAYS" >&2
   exit 1
 fi
 
@@ -105,6 +112,13 @@ if [[ "$failures" -gt 0 ]]; then
   if command -v notify-send >/dev/null 2>&1; then
     notify-send "RoleRadar Ingestion Failed" "Scheduled job ingestion encountered $failures failure(s). Check scheduled_ingest.log for details." --icon=dialog-error
   fi
+  exit 1
+fi
+
+echo "[$(date -Is)] pruning roles closed for at least $RETENTION_DAYS days"
+if ! "$PYTHON_BIN" -m roleradar.app.cli prune-roles \
+  --closed-for-days "$RETENTION_DAYS"; then
+  echo "[$(date -Is)] role retention cleanup failed" >&2
   exit 1
 fi
 

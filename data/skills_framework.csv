@@ -1,0 +1,56 @@
+skill_name,category,source_taxonomy,alias,match_type,case_sensitive
+Python,Programming Languages,local,Python,literal,false
+SQL,Data & Analytics,local,SQL,literal,false
+Excel,Data & Analytics,local,Excel,literal,false
+Power BI,Data & Analytics,local,Power BI,literal,false
+Power BI,Data & Analytics,local,PowerBI,literal,false
+Tableau,Data & Analytics,local,Tableau,literal,false
+AWS,Cloud & DevOps,local,AWS,literal,false
+AWS,Cloud & DevOps,local,Amazon Web Services,literal,false
+Azure,Cloud & DevOps,local,Azure,literal,false
+Azure,Cloud & DevOps,local,Microsoft Azure,literal,false
+GCP,Cloud & DevOps,local,GCP,literal,false
+GCP,Cloud & DevOps,local,Google Cloud,literal,false
+Docker,Cloud & DevOps,local,Docker,literal,false
+Kubernetes,Cloud & DevOps,local,Kubernetes,literal,false
+Kubernetes,Cloud & DevOps,local,K8s,literal,false
+Terraform,Cloud & DevOps,local,Terraform,literal,false
+Git,Cloud & DevOps,local,Git,literal,false
+Linux,Cloud & DevOps,local,Linux,literal,false
+Java,Programming Languages,local,Java,literal,false
+JavaScript,Programming Languages,local,JavaScript,literal,false
+JavaScript,Programming Languages,local,Javascript,literal,false
+TypeScript,Programming Languages,local,TypeScript,literal,false
+TypeScript,Programming Languages,local,Typescript,literal,false
+React,Programming Languages,local,React,literal,false
+Node.js,Programming Languages,local,Node.js,literal,false
+Node.js,Programming Languages,local,NodeJS,literal,false
+.NET,Programming Languages,local,.NET,literal,false
+.NET,Programming Languages,local,Dotnet,literal,false
+C#,Programming Languages,local,C#,literal,true
+C++,Programming Languages,local,C++,literal,true
+Go,Programming Languages,local,Go,literal,true
+R,Programming Languages,local,R,literal,true
+Salesforce,Platforms,local,Salesforce,literal,false
+SAP,Platforms,local,SAP,literal,false
+ServiceNow,Platforms,local,ServiceNow,literal,false
+Jira,Business Delivery,local,Jira,literal,false
+Agile,Business Delivery,local,Agile,literal,false
+Scrum,Business Delivery,local,Scrum,literal,false
+Data Analysis,Data & Analytics,local,Data Analysis,literal,false
+Data Analysis,Data & Analytics,local,Data Analytics,literal,false
+Data Visualization,Data & Analytics,local,Data Visualization,literal,false
+Data Visualization,Data & Analytics,local,Data Visualisation,literal,false
+ETL,Data & Analytics,local,ETL,literal,false
+Data Engineering,Data & Analytics,local,Data Engineering,literal,false
+Machine Learning,AI/ML,local,Machine Learning,literal,false
+Machine Learning,AI/ML,local,ML,literal,false
+AI,AI/ML,local,AI,literal,false
+AI,AI/ML,local,Artificial Intelligence,literal,false
+NLP,AI/ML,local,NLP,literal,false
+NLP,AI/ML,local,Natural Language Processing,literal,false
+LLM,AI/ML,local,LLM,literal,false
+LLM,AI/ML,local,Large Language Model,literal,false
+Cybersecurity,Cybersecurity,local,Cybersecurity,literal,false
+Cybersecurity,Cybersecurity,local,Cyber Security,literal,false
+Network Security,Cybersecurity,local,Network Security,literal,false

@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
 import click
+from sqlalchemy import func, select
 
 from roleradar import __version__
 from roleradar.analytics.role_intelligence import (
@@ -18,6 +21,11 @@ from roleradar.analytics.salary_trends import (
     salary_coverage_by_source,
     salary_range_summaries,
     top_salary_listings,
+)
+from roleradar.analytics.skill_matcher import (
+    find_skill_matches_from_aliases,
+    load_skill_alias_matchers,
+    persist_job_skill_matches,
 )
 from roleradar.analytics.skill_trends import (
     skill_extraction_coverage_by_source,
@@ -35,6 +43,8 @@ from roleradar.storage.database import (
     create_session_factory,
     init_database,
 )
+from roleradar.storage.maintenance import prune_closed_roles
+from roleradar.storage.models import Job, JobSkill, SourceListing
 
 
 @click.group(context_settings={"help_option_names": ["-h", "--help"]})
@@ -167,6 +177,104 @@ def sync_taxonomy(source: str) -> None:
         f"aliases={result.aliases_seen} "
         f"version={result.taxonomy_version or 'unknown'} "
         f"source_updated_at={source_updated_at}"
+    )
+
+
+@cli.command("classify-skills")
+@click.option(
+    "--days",
+    default=None,
+    type=click.IntRange(min=1),
+    help="Only classify active jobs last seen within the last N days.",
+)
+@click.option(
+    "--limit",
+    default=None,
+    type=click.IntRange(min=1),
+    help="Classify at most N eligible jobs.",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Report deterministic matches without writing job skill rows.",
+)
+def classify_skills(days: int | None, limit: int | None, dry_run: bool) -> None:
+    """Backfill deterministic skill classifications for existing active jobs."""
+    with _session_from_settings() as session:
+        aliases = load_skill_alias_matchers(session)
+        jobs = _skill_classification_jobs(session, days=days, limit=limit)
+        before_job_skills = _count_job_skills(session)
+        jobs_with_matches = 0
+        total_matches = 0
+
+        for job in jobs:
+            matches = find_skill_matches_from_aliases(
+                aliases,
+                job.description_text or "",
+            )
+            if matches:
+                jobs_with_matches += 1
+            total_matches += len(matches)
+            if not dry_run:
+                persist_job_skill_matches(session, job, matches)
+
+        if dry_run:
+            session.rollback()
+            newly_persisted = 0
+        else:
+            session.commit()
+            newly_persisted = _count_job_skills(session) - before_job_skills
+
+        missing_skills = _count_active_jobs_missing_skills(session, days=days)
+
+    click.echo(
+        "classified skills: "
+        f"jobs_scanned={len(jobs)} "
+        f"jobs_with_matches={jobs_with_matches} "
+        f"total_matches={total_matches} "
+        f"newly_persisted_job_skills={newly_persisted} "
+        f"active_jobs_missing_skills={missing_skills} "
+        f"dry_run={str(dry_run).lower()}"
+    )
+
+
+@cli.command("prune-roles")
+@click.option(
+    "--closed-for-days",
+    default=30,
+    show_default=True,
+    type=click.IntRange(min=1),
+    help="Delete roles that have been closed for at least this many days.",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Report records eligible for deletion without changing the database.",
+)
+def prune_roles(closed_for_days: int, dry_run: bool) -> None:
+    """Delete expired closed roles and their dependent historical records."""
+    closed_before = _cutoff(closed_for_days)
+    with _session_from_settings() as session:
+        result = prune_closed_roles(
+            session,
+            closed_before=closed_before,
+            dry_run=dry_run,
+        )
+        if dry_run:
+            session.rollback()
+        else:
+            session.commit()
+
+    click.echo(
+        "pruned roles: "
+        f"closed_for_days={closed_for_days} "
+        f"jobs={result.jobs} "
+        f"source_listings={result.source_listings} "
+        f"observations={result.observations} "
+        f"job_skills={result.job_skills} "
+        f"duplicate_candidates={result.duplicate_candidates} "
+        f"duplicate_audit_logs={result.duplicate_audit_logs} "
+        f"dry_run={str(dry_run).lower()}"
     )
 
 
@@ -390,6 +498,47 @@ def _session_from_settings():
     init_database(engine=engine)
     session_factory = create_session_factory(engine)
     return session_factory()
+
+
+def _skill_classification_jobs(
+    session,
+    *,
+    days: int | None = None,
+    limit: int | None = None,
+) -> list[Job]:
+    query = (
+        select(Job)
+        .where(
+            Job.closed_at.is_(None),
+            Job.description_text.is_not(None),
+            Job.description_text != "",
+            Job.source_listings.any(SourceListing.text_quality == "full_text"),
+        )
+        .order_by(Job.last_seen_at.desc(), Job.id)
+    )
+    if days is not None:
+        query = query.where(Job.last_seen_at >= _cutoff(days))
+    if limit is not None:
+        query = query.limit(limit)
+    return list(session.scalars(query).unique().all())
+
+
+def _count_job_skills(session) -> int:
+    return int(session.scalar(select(func.count()).select_from(JobSkill)) or 0)
+
+
+def _count_active_jobs_missing_skills(session, *, days: int | None = None) -> int:
+    query = select(func.count()).select_from(Job).where(
+        Job.closed_at.is_(None),
+        ~Job.job_skills.any(),
+    )
+    if days is not None:
+        query = query.where(Job.last_seen_at >= _cutoff(days))
+    return int(session.scalar(query) or 0)
+
+
+def _cutoff(days: int) -> datetime:
+    return datetime.now(UTC) - timedelta(days=days)
 
 
 def _echo_skill_coverage(title: str, rows: list[object]) -> None:

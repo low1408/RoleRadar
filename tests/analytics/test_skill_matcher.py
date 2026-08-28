@@ -3,6 +3,8 @@ from sqlalchemy import select
 from roleradar.analytics.skill_matcher import (
     extract_and_persist_job_skills,
     find_skill_matches,
+    find_skill_matches_from_aliases,
+    load_skill_alias_matchers,
 )
 from roleradar.storage.database import (
     create_database_engine,
@@ -87,3 +89,29 @@ def test_extract_and_persist_job_skills_is_idempotent(tmp_path) -> None:
     assert second_count == 1
     assert len(job_skills) == 1
 
+
+def test_preloaded_alias_matchers_can_be_reused_across_descriptions(tmp_path) -> None:
+    engine = create_database_engine(f"sqlite:///{tmp_path / 'batched.sqlite3'}")
+    init_database(engine=engine)
+    session_factory = create_session_factory(engine)
+
+    with session_factory() as session:
+        skill_repo = SkillRepository(session)
+        python = skill_repo.get_or_create_skill(name="Python", category="Tech")
+        sql = skill_repo.get_or_create_skill(name="SQL", category="Tech")
+        skill_repo.get_or_create_alias(skill=python, alias="Python")
+        skill_repo.get_or_create_alias(skill=sql, alias="SQL")
+        session.commit()
+
+        aliases = load_skill_alias_matchers(session)
+        first_matches = find_skill_matches_from_aliases(
+            aliases,
+            "Build Python data services.",
+        )
+        second_matches = find_skill_matches_from_aliases(
+            aliases,
+            "Write SQL analytics queries.",
+        )
+
+    assert {match.skill_name for match in first_matches} == {"Python"}
+    assert {match.skill_name for match in second_matches} == {"SQL"}

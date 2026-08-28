@@ -74,6 +74,7 @@ The `scheduled_ingest.sh` script is customizable using environment variables. If
 | `ROLERADAR_RESULTS_PER_PAGE` | `20` | Results requested per API query page. |
 | `ROLERADAR_MAX_PAGES` | Dynamic (see below) | Maximum pages to ingest per query. |
 | `ROLERADAR_LOCATION` | `Singapore` | Target location filter for ingestion. |
+| `ROLERADAR_RETENTION_DAYS` | `30` | Delete roles that have remained closed for at least this many days. |
 
 ### Dual-Mode Ingestion (Weekly Deep Sync)
 
@@ -82,6 +83,20 @@ To preserve network bandwidth and avoid rate limits, the script automatically to
 * **Sundays:** Deep runs (`MAX_PAGES=5`) to scan deeper pages and backfill any missing items.
 
 You can override this behavior by manually setting `ROLERADAR_MAX_PAGES` (e.g. `ROLERADAR_MAX_PAGES=3`).
+
+### Closed-role retention
+
+After every fully successful ingestion run, the script invokes the application's
+`prune-roles` command. The default policy deletes jobs that have been closed for
+at least 30 days, together with their source listings, observations, extracted
+job-skill links, and duplicate-review records. Active roles are never selected
+based only on their age.
+
+Preview the current retention selection without deleting anything:
+
+```bash
+~/venvs/roleradar/bin/python -m roleradar.app.cli prune-roles --closed-for-days 30 --dry-run
+```
 
 ---
 
