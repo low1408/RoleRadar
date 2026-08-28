@@ -3,6 +3,9 @@ import { createRoot } from "react-dom/client";
 import { Chart } from "chart.js/auto";
 import {
   Activity,
+  ArrowDown,
+  ArrowUp,
+  ArrowUpDown,
   BarChart3,
   BriefcaseBusiness,
   Building2,
@@ -75,6 +78,10 @@ function App() {
   const [trendRoleFamily, setTrendRoleFamily] = React.useState("");
   const [trendSkill, setTrendSkill] = React.useState("");
   const [trendWeeks, setTrendWeeks] = React.useState(12);
+  const [jobSort, setJobSort] = React.useState({
+    by: "last_seen_at",
+    order: "desc",
+  });
   const [roleFamilies, setRoleFamilies] = React.useState([]);
   const [payload, setPayload] = React.useState(null);
   const [selected, setSelected] = React.useState(null);
@@ -99,6 +106,20 @@ function App() {
 
   const dismissToast = (id) => {
     setToasts((prev) => prev.filter((t) => t.id !== id));
+  };
+
+  const handleJobSort = (field) => {
+    setJobSort((current) => ({
+      by: field,
+      order:
+        current.by === field
+          ? current.order === "asc"
+            ? "desc"
+            : "asc"
+          : field === "salary_midpoint"
+            ? "desc"
+            : "asc",
+    }));
   };
 
   const handleDeleteListing = async (item) => {
@@ -134,6 +155,8 @@ function App() {
     trendRoleFamily,
     trendSkill,
     trendWeeks,
+    jobSort.by,
+    jobSort.order,
   );
   const viewPayload =
     payload?.routeSection === routeSection && payload?.key === payloadKey
@@ -209,6 +232,10 @@ function App() {
     if (roleFamily && route.startsWith("#/jobs")) {
       params.set("role_family", roleFamily);
     }
+    if (route.startsWith("#/jobs")) {
+      params.set("sort_by", jobSort.by);
+      params.set("order", jobSort.order);
+    }
 
     const overviewParams = new URLSearchParams();
     if (overviewRoleFamily && routeSection === "overview") {
@@ -256,6 +283,8 @@ function App() {
     trendRoleFamily,
     trendSkill,
     trendWeeks,
+    jobSort.by,
+    jobSort.order,
     refreshCounter,
   ]);
 
@@ -291,6 +320,9 @@ function App() {
             setRoleFamily={setRoleFamily}
             roleFamilies={roleFamilies}
             onDelete={handleDeleteListing}
+            sortBy={jobSort.by}
+            sortOrder={jobSort.order}
+            onSort={handleJobSort}
           />
         )}
         {viewPayload && route.startsWith("#/admin") && (
@@ -1646,6 +1678,9 @@ function JobsView({
   setRoleFamily,
   roleFamilies,
   onDelete,
+  sortBy,
+  sortOrder,
+  onSort,
 }) {
   const rows = payload.data.items;
 
@@ -1688,10 +1723,22 @@ function JobsView({
             <thead>
               <tr>
                 <th>Role</th>
-                <th>Company</th>
+                <SortableColumnHeader
+                  field="company"
+                  label="Company"
+                  sortBy={sortBy}
+                  sortOrder={sortOrder}
+                  onSort={onSort}
+                />
                 <th>Source</th>
                 <th>Structured sections</th>
-                <th>Salary</th>
+                <SortableColumnHeader
+                  field="salary_midpoint"
+                  label="Salary"
+                  sortBy={sortBy}
+                  sortOrder={sortOrder}
+                  onSort={onSort}
+                />
                 <th>Last seen</th>
                 <th style={{ width: "48px" }}></th>
               </tr>
@@ -1732,6 +1779,37 @@ function JobsView({
         </div>
       )}
     </>
+  );
+}
+
+function SortableColumnHeader({ field, label, sortBy, sortOrder, onSort }) {
+  const isActive = sortBy === field;
+  const SortIcon = isActive
+    ? sortOrder === "asc"
+      ? ArrowUp
+      : ArrowDown
+    : ArrowUpDown;
+  const nextOrder = isActive
+    ? sortOrder === "asc"
+      ? "descending"
+      : "ascending"
+    : field === "salary_midpoint"
+      ? "descending"
+      : "ascending";
+
+  return (
+    <th aria-sort={isActive ? `${sortOrder}ending` : undefined}>
+      <button
+        type="button"
+        className={`table-sort-button ${isActive ? "active" : ""}`}
+        onClick={() => onSort(field)}
+        aria-label={`Sort by ${label.toLowerCase()}, ${nextOrder}`}
+        title={`Sort ${label.toLowerCase()} ${nextOrder}`}
+      >
+        <span>{label}</span>
+        <SortIcon size={13} aria-hidden="true" />
+      </button>
+    </th>
   );
 }
 
@@ -2110,8 +2188,12 @@ function getPayloadKey(
   trendRoleFamily,
   trendSkill,
   trendWeeks,
+  jobSortBy,
+  jobSortOrder,
 ) {
-  if (routeSection === "jobs") return `jobs:${query}:${roleFamily}`;
+  if (routeSection === "jobs") {
+    return `jobs:${query}:${roleFamily}:${jobSortBy}:${jobSortOrder}`;
+  }
   if (routeSection === "overview") return `overview:${overviewRoleFamily}`;
   if (routeSection === "trends") {
     return `trends:${trendRoleFamily}:${trendSkill}:${trendWeeks}`;

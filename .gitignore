@@ -32,3 +32,15 @@ quorum/
 *.p12
 *.pfx
 certs/
+
+# RoleRadar runtime artifacts
+data/ingest.lock
+scheduled_ingest.log
+
+# Local generated notes
+documentation/Frontend-documentation.md
+
+# Stale frontend build artifacts
+roleradar/app/static/assets/index-BqyE2Pew.css
+roleradar/app/static/assets/index-DBFEGYG0.js
+roleradar/app/static/assets/index-z0-SArhz.js

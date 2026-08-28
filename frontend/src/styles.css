@@ -1,5 +1,30 @@
 @import url("../../roleradar/app/static/styles.css");
 
+.table-sort-button {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  display: inline-flex;
+  font: inherit;
+  gap: 5px;
+  letter-spacing: inherit;
+  padding: 0;
+  text-transform: inherit;
+}
+
+.table-sort-button:hover,
+.table-sort-button.active {
+  color: var(--text-main);
+}
+
+.table-sort-button:focus-visible {
+  border-radius: 3px;
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
 .company-overview {
   display: flex;
   flex-direction: column;
@@ -494,4 +519,3 @@ body.dark .toast-close:hover {
     opacity: 1;
   }
 }
-
